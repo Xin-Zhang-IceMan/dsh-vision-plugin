@@ -51,6 +51,42 @@ DSH settings panel (bottom-left ⚙️) → **Vision Model** page:
 
 ## Installation
 
+### 0. One-click install (send this prompt to DSH)
+
+Copy the block below and send it to DSH (a session running the `cordis` agent preset). The agent will fetch the source, define and run the plugin, configure `settings.yaml`, and verify the install:
+
+```text
+Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.0.1) for me:
+
+1. Obtain the plugin source (fetch via curl, or read from a local checkout):
+   - Host half:   https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.js
+   - Client half: https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.client.js
+
+2. Define the dynamic Cordis plugin with cordis_define:
+   - kind: "new", idPrefix: "visn"
+   - code.host   = the full content of vision-plugin.js (the function body)
+   - code.client = the full content of vision-plugin.client.js (the function body)
+   - name: "Vision Assistant"
+   - purpose: one sentence describing the plugin
+
+3. Activate it with cordis_run (mode: "run"); approve the Client half when prompted.
+
+4. If ~/.dsh/settings.yaml does not yet declare image capability for the text-only
+   default model, add (hot-reloaded, no restart needed):
+   llm-pi-ai:
+     providers:
+       opencode-go:
+         apiKeyEnv: OPENCODE_GO_API_KEY
+         modelOverrides:
+           deepseek-v4-flash:
+             input: [text, image]
+
+5. Verify:
+   - Tool.listTools shows vision_analyze
+   - The settings panel has a "Vision Model" page (bilingual, follows the UI language)
+   - Pasting an image into the chat is transcribed automatically
+```
+
 ### 1. Load the plugin (DSH dynamic-plugin mechanism)
 
 Pass the content of [`plugin/vision-plugin.js`](plugin/vision-plugin.js) as `code.host` and [`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) as `code.client` in one `cordis_define` call (pick any `idPrefix`, e.g. `visn`), then activate with `cordis_run`:

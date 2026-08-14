@@ -51,6 +51,41 @@ DSH 设置面板（左下角 ⚙️）→ **视觉模型** 页：
 
 ## 安装
 
+### 0. 一键安装（把下面的提示词发送给 DSH）
+
+复制下面的提示词，发送给 DSH（运行 `cordis` agent 预设的会话）。Agent 会自动获取源码、定义并运行插件、配置 `settings.yaml` 并完成验证：
+
+```text
+请帮我安装 dsh-vision-plugin（DeepSeek Harness 视觉插件 v1.0.1）：
+
+1. 获取插件源码（用 curl 下载，或从本地检出目录读取）：
+   - Host 半部：  https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.js
+   - Client 半部：https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.client.js
+
+2. 用 cordis_define 定义动态 Cordis 插件：
+   - kind: "new"，idPrefix: "visn"
+   - code.host   = vision-plugin.js 的完整内容（函数体）
+   - code.client = vision-plugin.client.js 的完整内容（函数体）
+   - name: "Vision Assistant"
+   - purpose: 一句话描述插件用途
+
+3. 用 cordis_run 激活（mode: "run"）；Client 部分提示审批时请批准。
+
+4. 如果 ~/.dsh/settings.yaml 尚未为纯文本默认模型声明图片能力，请添加（热加载，无需重启）：
+   llm-pi-ai:
+     providers:
+       opencode-go:
+         apiKeyEnv: OPENCODE_GO_API_KEY
+         modelOverrides:
+           deepseek-v4-flash:
+             input: [text, image]
+
+5. 验证：
+   - Tool.listTools 中能看到 vision_analyze
+   - 设置面板出现"视觉模型 / Vision Model"页（双语，跟随界面语言）
+   - 在对话框粘贴图片会被自动转写
+```
+
 ### 1. 加载插件（DSH 动态插件机制）
 
 把 [`plugin/vision-plugin.js`](plugin/vision-plugin.js) 的内容作为 `code.host`、[`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) 的内容作为 `code.client`，传入同一次 `cordis_define`（`idPrefix` 自拟，如 `visn`），然后用 `cordis_run` 激活：
