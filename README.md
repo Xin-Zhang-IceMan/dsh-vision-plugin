@@ -1,13 +1,16 @@
 # dsh-vision-plugin
 
-> 让纯文本模型（如 deepseek-v4）拥有视觉能力的 DeepSeek Harness 动态 Cordis 插件。
+> 让纯文本模型（如 deepseek-v4）拥有视觉能力的 DeepSeek Harness 动态 Cordis 插件。带设置界面，可配置视觉模型。
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-dynamic%20cordis-1f6feb)
+
+**当前版本：v1.0.0（最终版）** — 仅保留最终版本，无历史版本残留。
 
 ## 功能
 
 1. **`vision_analyze` 工具** — 模型可直接调用，分析本地图片文件（PNG / JPEG / WebP / GIF），返回视觉模型的详细文字描述。
 2. **粘贴图片自动转写** — 在对话框粘贴/上传的图片会进入会话；当目标模型是纯文本模型时，`llm/stream` waterfall 监听器自动调用视觉模型把图片转写为文字描述，再交给主模型作答。**文本模型也能"看见"图片**。
+3. **设置界面** — 在 DSH 设置面板新增"视觉模型"页：显示当前版本状态，下拉配置默认视觉模型（自动选择或指定模型），保存立即生效。
 
 ## 工作原理
 
@@ -23,9 +26,17 @@
 ```
 
 - 复用部署自身配置的 LLM 路由（默认 `opencode-go`），**无需额外 API Key**。
-- 视觉模型自动选择：优先 `qwen3.7-plus`，按优先级列表 `qwen3.7-plus → kimi-k3 → grok-4.5 → minimax-m3 → …`，也可在调用时手动指定。
+- 视觉模型选择优先级：**界面配置 > 调用参数指定 > 自动选择**（`qwen3.7-plus → kimi-k3 → grok-4.5 → minimax-m3 → …`）。
 - 转写结果按 `attachmentId + 问题文本` 缓存（上限 300 条），多轮追问不重复调用视觉模型。
 - 监听器注册在根上下文，对所有会话生效；插件停止时自动卸载。
+
+## 设置界面
+
+DSH 设置面板（左下角 ⚙️）→ **视觉模型** 页：
+
+- **状态徽章**：`● 运行中` + `v1.0.0 · 当前版本（仅保留最终版）`——只显示当前最终版本，不展示任何历史版本。
+- **默认视觉模型**：下拉选择「自动选择（推荐）」或任一支持图片的模型（如 `kimi-k3`、`grok-4.5`），点保存立即生效。
+- **信息区**：当前生效模型、LLM 路由、原生视觉模型白名单列表、转写机制说明。
 
 ## 容错设计
 
@@ -40,11 +51,11 @@
 
 ### 1. 加载插件（DSH 动态插件机制）
 
-把 [`plugin/vision-plugin.js`](plugin/vision-plugin.js) 的内容作为 `code.host` 传入 `cordis_define`（`idPrefix` 自拟，如 `visn`），然后用 `cordis_run` 激活：
+把 [`plugin/vision-plugin.js`](plugin/vision-plugin.js) 的内容作为 `code.host`、[`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) 的内容作为 `code.client`，传入同一次 `cordis_define`（`idPrefix` 自拟，如 `visn`），然后用 `cordis_run` 激活：
 
 ```
 cordis_define  → 返回 pluginId / packageId
-cordis_run     → 激活
+cordis_run     → 激活（Client 部分需在 UI 中批准一次）
 ```
 
 ### 2. 配置部署（让纯文本模型能接收粘贴图片）
@@ -78,13 +89,14 @@ llm-pi-ai:
 | --- | --- | --- |
 | `path` | ✅ | 图片文件路径（PNG/JPEG/WebP/GIF） |
 | `question` | ❌ | 对图片的具体问题；缺省时输出整图详细描述 |
-| `model` | ❌ | 指定视觉模型 id（如 `kimi-k3`）；缺省自动选择 |
+| `model` | ❌ | 指定视觉模型 id（如 `kimi-k3`）；缺省按 界面配置 > 自动选择 |
 | `provider` | ❌ | LLM 提供方路由；缺省 `opencode-go` |
 
 ## 配置常量（编辑 `plugin/vision-plugin.js`）
 
 | 常量 | 说明 |
 | --- | --- |
+| `VERSION` | 插件版本号（设置界面展示） |
 | `DEFAULT_PROVIDER` | LLM 路由（默认 `opencode-go`） |
 | `DEFAULT_MODEL` | 兜底视觉模型（默认 `qwen3.7-plus`） |
 | `NATIVE_VISION_MODELS` | 原生视觉模型白名单（白名单内图片直接原生发送，不转写） |
@@ -93,6 +105,7 @@ llm-pi-ai:
 ## 注意事项
 
 - 插件是**进程内动态插件**：DSH 重启后需重新运行 `cordis_run`（`pluginId` / `packageId` 保持不变即可）；如需持久化，可将代码迁移为 host 组合中的插件行。
+- 界面配置的默认视觉模型保存在**进程内存**中（动态插件生命周期内有效），重启后回到自动选择。
 - 模型选择 UI 中，被 `modelOverrides` 声明的文本模型会显示"支持图片"标记——这是有意的（经过转写它确实能处理图片）。
 - 转写依赖部署路由存在可用的视觉模型；若路由变更，请同步更新 `DEFAULT_PROVIDER` / `NATIVE_VISION_MODELS` / `MODEL_PRIORITY`。
 

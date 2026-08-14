@@ -14,6 +14,10 @@
  *     blocks (pasted/attached images) into text descriptions whenever the
  *     target model cannot natively accept images — so a text-only model like
  *     deepseek-v4-flash can still "see" pasted images.
+ *  3. Package-private RPCs (`vision/get-state`, `vision/set-model`) that back
+ *     the settings page (see vision-plugin.client.js): configure the default
+ *     vision model from the UI. The configured model is process-local and
+ *     takes precedence over auto-selection.
  *
  * Deployment prerequisites:
  *  - The deployment's LLM route must expose at least one image-capable model
@@ -48,6 +52,7 @@ return {
   apply(ctx) {
     const DEFAULT_PROVIDER = 'opencode-go'
     const DEFAULT_MODEL = 'qwen3.7-plus'
+    const VERSION = '1.0.0'
     // Models that natively accept image input on the deployment route. The
     // deployment advertises deepseek-v4-flash as image-capable too (so the chat
     // admits pasted images), but it is NOT in this set — its images must be
@@ -77,6 +82,9 @@ return {
     const VISION_SYSTEM = 'You are an image analysis assistant integrated into a coding agent. Answer the user question about the provided image accurately and concisely, in the language of the question. Quote visible text verbatim when relevant.'
     // attachmentId + question -> description, so repeated turns reuse one vision call.
     const cache = new Map()
+    // User-configured default vision model (null = auto-select). Set via the
+    // settings page through the vision/set-model RPC.
+    let configuredModel = null
 
     async function pickModel(provider, requested) {
       if (requested) return requested
@@ -95,13 +103,51 @@ return {
       return DEFAULT_MODEL
     }
 
+    async function catalogState() {
+      let models = []
+      try {
+        const all = await ctx.llm.listModels(DEFAULT_PROVIDER)
+        models = all.map((m) => ({
+          id: m.id,
+          name: m.name || m.id,
+          image: Array.isArray(m.inputModalities) && m.inputModalities.includes('image'),
+        }))
+      } catch (err) {
+        console.log('vision: catalog lookup failed:', String(err && err.message || err))
+      }
+      return {
+        version: VERSION,
+        configuredModel: configuredModel || null,
+        defaultModel: DEFAULT_MODEL,
+        provider: DEFAULT_PROVIDER,
+        nativeVisionModels: [...NATIVE_VISION_MODELS],
+        priority: MODEL_PRIORITY,
+        models,
+      }
+    }
+
+    ctx.effect(() => harness.handle('vision/get-state', async () => catalogState()))
+    ctx.effect(() => harness.handle('vision/set-model', async (args) => {
+      const requested = args && args.model ? String(args.model) : null
+      if (requested !== null) {
+        const state = await catalogState()
+        const known = state.models.find((m) => m.id === requested)
+        if (!known || !known.image) {
+          throw new Error(`vision: "${requested}" is not an image-capable model on route ${DEFAULT_PROVIDER}`)
+        }
+      }
+      configuredModel = requested
+      console.log('vision: default vision model set to', requested || 'auto')
+      return catalogState()
+    }))
+
     // One vision-model call over the deployment's own llm route. The request
     // carries the TRANSLATED marker so the waterfall listener passes it through.
     // Tolerates a stream that produced text but ended with an error finish
     // (the content is already usable); only a total failure throws, and it is
     // retried once with a fallback model from the priority list.
     async function runVisionCall(imageBlocks, question, requestedModel) {
-      let model = requestedModel || await pickModel(DEFAULT_PROVIDER, null)
+      let model = configuredModel || requestedModel || await pickModel(DEFAULT_PROVIDER, null)
       let lastError = null
       for (let attempt = 0; attempt < 2; attempt++) {
         const result = await streamOnce(model, imageBlocks, question)
@@ -311,6 +357,6 @@ return {
     })
 
     ctx.effect(() => harness.registerTool(ctx, tool))
-    console.log('vision plugin active — vision_analyze registered; auto-translation enabled with retry + degrade; default provider:', DEFAULT_PROVIDER, 'default model:', DEFAULT_MODEL)
+    console.log('vision plugin v' + VERSION + ' active — tool + auto-translation + settings RPC ready; default provider:', DEFAULT_PROVIDER, 'default model:', DEFAULT_MODEL)
   },
 }
