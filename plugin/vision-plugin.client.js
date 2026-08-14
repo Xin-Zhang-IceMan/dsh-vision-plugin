@@ -71,7 +71,7 @@ return {
           React.createElement('div', { className: 'dsh-vision-head' },
             React.createElement('span', { className: 'dsh-vision-badge' }, '● 运行中'),
             React.createElement('span', { className: 'dsh-vision-version' },
-              'v' + String(state.version) + ' · 当前版本（仅保留最终版）')),
+              'v' + String(state.version))),
           React.createElement('div', { className: 'dsh-vision-field' },
             React.createElement('label', null, '默认视觉模型'),
             React.createElement('select', {
