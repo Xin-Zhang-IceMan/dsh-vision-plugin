@@ -8,21 +8,30 @@
  *
  * What it provides:
  *  1. A model-visible tool `vision_analyze(path, question?, model?, provider?)`
- *     that reads a local image and answers via an image-capable model on the
- *     deployment's own LLM route (no extra credentials needed).
+ *     that reads a local image and answers via an image-capable model on one
+ *     of the deployment's configured LLM routes (no extra credentials).
  *  2. An `llm/stream` waterfall listener that automatically translates image
  *     blocks (pasted/attached images) into text descriptions whenever the
  *     target model cannot natively accept images — so a text-only model like
  *     deepseek-v4-flash can still "see" pasted images.
  *  3. Package-private RPCs (`vision/get-state`, `vision/set-model`) that back
  *     the settings page (see vision-plugin.client.js): configure the default
- *     vision model from the UI. The configured model is process-local and
- *     takes precedence over auto-selection.
+ *     vision route (provider + model) from the UI. The configured route is
+ *     process-local and takes precedence over auto-selection.
+ *
+ * Route discovery (v1.1.0 — no hard-coded provider):
+ *  - `resolveVisionRoute(preferred)`: walks every registered provider (the
+ *    calling request's provider first, then all `llm.listProviders()`),
+ *    queries each catalog via `llm.listModels`, and picks the first
+ *    image-capable model — preferring NATIVE_VISION_MODELS whitelist entries,
+ *    then MODEL_PRIORITY order, then any remaining image-capable model.
+ *  - The waterfall listener prefers the triggering request's own provider, so
+ *    transcription follows whatever route the conversation is using.
+ *  - If no provider exposes a vision model, translation degrades to a
+ *    placeholder instead of failing the turn.
  *
  * Deployment prerequisites:
- *  - The deployment's LLM route must expose at least one image-capable model
- *    (see MODEL_PRIORITY / NATIVE_VISION_MODELS below; the default deployment
- *    route "opencode-go" ships several).
+ *  - At least one configured LLM provider must expose an image-capable model.
  *  - To let pasted images pass the host's admission check for a text-only
  *    model, the deployment advertises that model as image-capable via
  *    `modelOverrides` in settings.yaml (see README):
@@ -43,20 +52,19 @@
  *    turns reuse one vision call.
  *  - Robustness: a stream that produced text but ended with an error finish
  *    keeps its content; a total failure is retried once with a fallback
- *    vision model; if everything fails the turn degrades to a placeholder
- *    block instead of failing the whole conversation.
+ *    route; if everything fails the turn degrades to a placeholder block
+ *    instead of failing the whole conversation.
  */
 
 return {
   inject: ['fs', 'llm', 'attachments'],
   apply(ctx) {
-    const DEFAULT_PROVIDER = 'opencode-go'
     const DEFAULT_MODEL = 'qwen3.7-plus'
-    const VERSION = '1.0.0'
-    // Models that natively accept image input on the deployment route. The
-    // deployment advertises deepseek-v4-flash as image-capable too (so the chat
-    // admits pasted images), but it is NOT in this set — its images must be
-    // translated to text before dispatch.
+    const VERSION = '1.1.0'
+    // Models that natively accept image input wherever they appear. The
+    // deployment may advertise text-only models as image-capable via
+    // modelOverrides (so the chat admits pasted images), but those models are
+    // NOT in this set — their images must be translated to text before dispatch.
     const NATIVE_VISION_MODELS = new Set([
       'minimax-m3', 'qwen3.7-plus', 'qwen3.6-plus',
       'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k3',
@@ -82,44 +90,83 @@ return {
     const VISION_SYSTEM = 'You are an image analysis assistant integrated into a coding agent. Answer the user question about the provided image accurately and concisely, in the language of the question. Quote visible text verbatim when relevant.'
     // attachmentId + question -> description, so repeated turns reuse one vision call.
     const cache = new Map()
-    // User-configured default vision model (null = auto-select). Set via the
-    // settings page through the vision/set-model RPC.
-    let configuredModel = null
+    // User-configured default vision route ({ provider, model }, null = auto).
+    let configuredRoute = null
 
-    async function pickModel(provider, requested) {
-      if (requested) return requested
+    // Every provider route registered in this deployment, preferred first.
+    function registeredProviders(preferred) {
+      const providers = []
+      if (preferred) providers.push(preferred)
       try {
-        const models = await ctx.llm.listModels(provider)
-        const vision = models.filter((m) =>
-          Array.isArray(m.inputModalities) && m.inputModalities.includes('image'))
-        for (const id of MODEL_PRIORITY) {
-          const found = vision.find((m) => m.id === id)
-          if (found) return found.id
+        for (const p of ctx.llm.listProviders()) {
+          if (!providers.includes(p.id)) providers.push(p.id)
         }
-        if (vision.length > 0) return vision[0].id
       } catch (err) {
-        console.log('vision: model discovery failed, using default:', String(err && err.message || err))
+        console.log('vision: provider discovery failed:', String(err && err.message || err))
       }
-      return DEFAULT_MODEL
+      return providers
+    }
+
+    // Find the first image-capable model, preferring the caller's provider,
+    // then native-vision whitelist models, then MODEL_PRIORITY order.
+    async function resolveVisionRoute(preferredProvider) {
+      for (const provider of registeredProviders(preferredProvider)) {
+        try {
+          const models = await ctx.llm.listModels(provider)
+          const vision = models.filter((m) =>
+            Array.isArray(m.inputModalities) && m.inputModalities.includes('image'))
+          const native = vision.filter((m) => NATIVE_VISION_MODELS.has(m.id))
+          const candidates = native.length > 0 ? native : vision
+          for (const id of MODEL_PRIORITY) {
+            const found = candidates.find((m) => m.id === id)
+            if (found) return { provider, model: found.id }
+          }
+          if (candidates.length > 0) return { provider, model: candidates[0].id }
+        } catch (err) {
+          console.log('vision: catalog lookup failed for provider', provider + ':', String(err && err.message || err))
+        }
+      }
+      return { provider: preferredProvider || null, model: null }
+    }
+
+    // Find the provider that serves one exact image-capable model id.
+    async function findProviderForModel(model, preferredProvider) {
+      for (const provider of registeredProviders(preferredProvider)) {
+        try {
+          const models = await ctx.llm.listModels(provider)
+          const found = models.find((m) => m.id === model
+            && Array.isArray(m.inputModalities) && m.inputModalities.includes('image'))
+          if (found) return provider
+        } catch (err) {
+          console.log('vision: catalog lookup failed for provider', provider + ':', String(err && err.message || err))
+        }
+      }
+      return null
     }
 
     async function catalogState() {
       let models = []
-      try {
-        const all = await ctx.llm.listModels(DEFAULT_PROVIDER)
-        models = all.map((m) => ({
-          id: m.id,
-          name: m.name || m.id,
-          image: Array.isArray(m.inputModalities) && m.inputModalities.includes('image'),
-        }))
-      } catch (err) {
-        console.log('vision: catalog lookup failed:', String(err && err.message || err))
+      for (const provider of registeredProviders(null)) {
+        try {
+          const all = await ctx.llm.listModels(provider)
+          for (const m of all) {
+            models.push({
+              id: m.id,
+              name: m.name || m.id,
+              image: Array.isArray(m.inputModalities) && m.inputModalities.includes('image'),
+              provider,
+            })
+          }
+        } catch (err) {
+          console.log('vision: catalog lookup failed for provider', provider + ':', String(err && err.message || err))
+        }
       }
+      const route = configuredRoute || await resolveVisionRoute(null)
       return {
         version: VERSION,
-        configuredModel: configuredModel || null,
+        configuredRoute: configuredRoute || null,
         defaultModel: DEFAULT_MODEL,
-        provider: DEFAULT_PROVIDER,
+        provider: (route && route.provider) || null,
         nativeVisionModels: [...NATIVE_VISION_MODELS],
         priority: MODEL_PRIORITY,
         models,
@@ -128,41 +175,65 @@ return {
 
     ctx.effect(() => harness.handle('vision/get-state', async () => catalogState()))
     ctx.effect(() => harness.handle('vision/set-model', async (args) => {
-      const requested = args && args.model ? String(args.model) : null
-      if (requested !== null) {
-        const state = await catalogState()
-        const known = state.models.find((m) => m.id === requested)
-        if (!known || !known.image) {
-          throw new Error(`vision: "${requested}" is not an image-capable model on route ${DEFAULT_PROVIDER}`)
-        }
+      const model = args && args.model ? String(args.model) : null
+      if (model === null) {
+        configuredRoute = null
+        console.log('vision: default vision route set to auto')
+        return catalogState()
       }
-      configuredModel = requested
-      console.log('vision: default vision model set to', requested || 'auto')
+      const preferred = args && args.provider ? String(args.provider) : null
+      const provider = await findProviderForModel(model, preferred)
+      if (provider === null) {
+        throw new Error(`vision: "${model}" is not an image-capable model on any configured provider`)
+      }
+      configuredRoute = { provider, model }
+      console.log('vision: default vision route set to', provider + '/' + model)
       return catalogState()
     }))
 
-    // One vision-model call over the deployment's own llm route. The request
+    // One vision-model call over the deployment's own LLM routes. The request
     // carries the TRANSLATED marker so the waterfall listener passes it through.
     // Tolerates a stream that produced text but ended with an error finish
     // (the content is already usable); only a total failure throws, and it is
-    // retried once with a fallback model from the priority list.
-    async function runVisionCall(imageBlocks, question, requestedModel) {
-      let model = configuredModel || requestedModel || await pickModel(DEFAULT_PROVIDER, null)
+    // retried once with a fallback route.
+    async function runVisionCall(imageBlocks, question, requestedModel, requestedProvider) {
+      let provider = null
+      let model = null
+      if (configuredRoute) {
+        provider = configuredRoute.provider
+        model = configuredRoute.model
+      } else if (requestedModel) {
+        provider = await findProviderForModel(requestedModel, requestedProvider)
+        model = requestedModel
+        if (provider === null) {
+          throw new Error(`vision: "${requestedModel}" is not an image-capable model on any configured provider`)
+        }
+      } else {
+        const route = await resolveVisionRoute(requestedProvider || null)
+        provider = route.provider
+        model = route.model
+        if (!provider || !model) {
+          throw new Error('vision: no vision-capable model found on any configured provider')
+        }
+      }
       let lastError = null
       for (let attempt = 0; attempt < 2; attempt++) {
-        const result = await streamOnce(model, imageBlocks, question)
-        if (result.ok) return { description: result.description, model, truncated: result.truncated }
+        const result = await streamOnce(provider, model, imageBlocks, question)
+        if (result.ok) return { description: result.description, model, provider, truncated: result.truncated }
         lastError = result.error
-        console.log('vision: attempt', attempt + 1, 'failed for', model + ':', lastError)
+        console.log('vision: attempt', attempt + 1, 'failed for', provider + '/' + model + ':', lastError)
         if (attempt === 0) {
-          const fallback = MODEL_PRIORITY.find((id) => id !== model) || DEFAULT_MODEL
-          if (fallback !== model) model = fallback
+          const route = await resolveVisionRoute(provider)
+          if (route.model !== null && route.model !== model) {
+            provider = route.provider
+            model = route.model
+          }
         }
       }
       throw new Error(lastError || 'vision model unavailable')
     }
 
-    async function streamOnce(model, imageBlocks, question) {
+    async function streamOnce(provider, model, imageBlocks, question) {
       let text = ''
       let reasoning = ''
       let truncated = false
@@ -170,7 +241,7 @@ return {
       let failure = null
       try {
         const chunks = ctx.llm.stream({
-          provider: DEFAULT_PROVIDER,
+          provider,
           model,
           system: VISION_SYSTEM,
           messages: [{ role: 'user', content: [...imageBlocks, { type: 'text', text: question }] }],
@@ -205,7 +276,7 @@ return {
 
     // Replace image blocks in user messages with vision-model text descriptions.
     // A failed translation degrades to a placeholder instead of failing the turn.
-    async function translateMessages(messages) {
+    async function translateMessages(messages, preferredProvider) {
       const out = []
       for (const message of messages) {
         if (!message || message.role !== 'user' || !Array.isArray(message.content)
@@ -222,7 +293,7 @@ return {
         let failed = false
         if (description === undefined) {
           try {
-            const result = await runVisionCall(imageBlocks, question, null)
+            const result = await runVisionCall(imageBlocks, question, null, preferredProvider)
             description = result.description
             if (cache.size >= 300) cache.clear()
             cache.set(key, description)
@@ -254,12 +325,12 @@ return {
         return yield* next()
       }
       if (options[TRANSLATED]) return yield* next()
-      if (options.provider === DEFAULT_PROVIDER && NATIVE_VISION_MODELS.has(options.model)) {
+      if (NATIVE_VISION_MODELS.has(options.model)) {
         return yield* next()
       }
       let messages
       try {
-        messages = await translateMessages(options.messages)
+        messages = await translateMessages(options.messages, options.provider)
       } catch (err) {
         // Unexpected failure inside translation itself: degrade rather than kill
         // the turn — strip image blocks so the text-only model still answers.
@@ -295,7 +366,7 @@ return {
           },
           provider: {
             type: 'string',
-            description: 'Optional LLM provider route override. Defaults to the deployment route "opencode-go".',
+            description: 'Optional LLM provider route override. When omitted, the route is discovered automatically across all configured providers.',
           },
         },
         required: ['path'],
@@ -325,7 +396,7 @@ return {
       },
       timeoutMs: 180000,
       async execute(args, exec) {
-        const provider = args.provider || DEFAULT_PROVIDER
+        const provider = args.provider || null
         const target = await ctx.fs.resolve(args.path)
         const info = await ctx.fs.stat(target, exec.signal)
         if (info === undefined) {
@@ -351,12 +422,12 @@ return {
         const question = args.question && args.question.trim().length > 0
           ? args.question.trim()
           : DEFAULT_QUESTION
-        const result = await runVisionCall([{ type: 'image', attachment: ref }], question, args.model)
-        return { description: result.description, model: result.model, provider, imagePath: args.path, truncated: result.truncated }
+        const result = await runVisionCall([{ type: 'image', attachment: ref }], question, args.model, provider)
+        return { description: result.description, model: result.model, provider: result.provider, imagePath: args.path, truncated: result.truncated }
       },
     })
 
     ctx.effect(() => harness.registerTool(ctx, tool))
-    console.log('vision plugin v' + VERSION + ' active — tool + auto-translation + settings RPC ready; default provider:', DEFAULT_PROVIDER, 'default model:', DEFAULT_MODEL)
+    console.log('vision plugin v' + VERSION + ' active — tool + auto-translation + settings RPC ready (dynamic provider discovery)')
   },
 }

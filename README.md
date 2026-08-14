@@ -6,7 +6,7 @@
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-dynamic%20cordis-1f6feb)
 
-**Current version: v1.0.1** — the UI shows only the current version, no version history.
+**Current version: v1.1.0** — the UI shows only the current version, no version history.
 
 ## Features
 
@@ -27,7 +27,13 @@ Paste image → Host admission check (modelOverrides declares image capability �
            → main model answers from the text description
 ```
 
-- Reuses the deployment's own LLM route (default `opencode-go`) — **no extra API keys**.
+**Vision route discovery (no hard-coded provider):** the plugin walks every
+configured LLM provider — the calling request's provider first, then all
+`llm.listProviders()` — and picks the first image-capable model (native-vision
+whitelist first, then `MODEL_PRIORITY` order, then any remaining image-capable
+model). Transcription therefore follows whatever route the conversation uses,
+and works as long as **at least one** configured provider exposes a vision
+model — no extra API keys.
 - Vision model selection priority: **UI config > per-call override > auto-select** (`qwen3.7-plus → kimi-k3 → grok-4.5 → minimax-m3 → …`).
 - Translation results are cached by `attachmentId + question` (up to 300 entries), so follow-up turns reuse one vision call.
 - The listener lives on the root context and serves every session; it is removed automatically when the plugin stops.
@@ -128,22 +134,23 @@ Paste (or drag-and-drop / upload) an image into the chat with a sentence like "W
 | `path` | ✅ | Image file path (PNG/JPEG/WebP/GIF) |
 | `question` | ❌ | Specific question about the image; defaults to a full description |
 | `model` | ❌ | Vision model id override (e.g. `kimi-k3`); defaults to UI config → auto-select |
-| `provider` | ❌ | LLM provider route; defaults to `opencode-go` |
+| `provider` | ❌ | LLM provider route override; omitted = discovered automatically across all configured providers |
 
 ## Constants (edit `plugin/vision-plugin.js`)
 
 | Constant | Description |
 | --- | --- |
 | `VERSION` | Plugin version shown in the settings UI |
-| `DEFAULT_PROVIDER` | LLM route (default `opencode-go`) |
-| `DEFAULT_MODEL` | Fallback vision model (default `qwen3.7-plus`) |
+| `DEFAULT_MODEL` | Fallback vision model id (default `qwen3.7-plus`) |
+| *(no provider constant)* | Vision routes are discovered dynamically across all configured providers |
 | `NATIVE_VISION_MODELS` | Native-vision whitelist (images sent natively, not transcribed) |
 | `MODEL_PRIORITY` | Auto-selection priority for vision models |
 
 ## Notes
 
 - The plugin is a **process-local dynamic plugin**: after a DSH restart, re-run `cordis_run` with the same `pluginId` / `packageId`; to persist it, migrate the code into a host-composition plugin row.
-- The UI-configured default vision model lives in **process memory** (valid for the plugin's lifetime); a restart returns to auto-select.
+- The UI-configured default vision route (provider + model) lives in **process memory** (valid for the plugin's lifetime); a restart returns to auto-select.
+- No `opencode-go` configured? The plugin still works — it discovers vision models on any other configured provider; if none exists, transcription degrades to a placeholder instead of failing.
 - Text-only models advertised via `modelOverrides` show an "image-capable" mark in the model picker — intentional (they do handle images through transcription).
 - Translation depends on the deployment route exposing vision models; update `DEFAULT_PROVIDER` / `NATIVE_VISION_MODELS` / `MODEL_PRIORITY` if the route changes.
 

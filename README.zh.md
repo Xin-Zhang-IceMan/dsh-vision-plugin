@@ -6,7 +6,7 @@
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-dynamic%20cordis-1f6feb)
 
-**当前版本：v1.0.1** — 界面只显示当前版本，无历史版本残留。
+**当前版本：v1.1.0** — 界面只显示当前版本，无历史版本残留。
 
 ## 功能
 
@@ -27,7 +27,12 @@
         → 主模型基于文字描述正常作答
 ```
 
-- 复用部署自身配置的 LLM 路由（默认 `opencode-go`），**无需额外 API Key**。
+**视觉路由动态发现（不依赖任何写死的 provider）**：插件会遍历所有已配置的
+LLM provider——优先使用触发请求自身的 provider，然后依次查询
+`llm.listProviders()` 中的每个路由——选取第一个支持图片的模型（优先原生视觉
+白名单，其次 `MODEL_PRIORITY` 顺序，最后是其余支持图片的模型）。转写因此跟随
+会话当前使用的路由；只要**任意一个**已配置 provider 提供视觉模型即可工作，
+**无需额外 API Key**。
 - 视觉模型选择优先级：**界面配置 > 调用参数指定 > 自动选择**（`qwen3.7-plus → kimi-k3 → grok-4.5 → minimax-m3 → …`）。
 - 转写结果按 `attachmentId + 问题文本` 缓存（上限 300 条），多轮追问不重复调用视觉模型。
 - 监听器注册在根上下文，对所有会话生效；插件停止时自动卸载。
@@ -127,22 +132,23 @@ llm-pi-ai:
 | `path` | ✅ | 图片文件路径（PNG/JPEG/WebP/GIF） |
 | `question` | ❌ | 对图片的具体问题；缺省时输出整图详细描述 |
 | `model` | ❌ | 指定视觉模型 id（如 `kimi-k3`）；缺省按 界面配置 > 自动选择 |
-| `provider` | ❌ | LLM 提供方路由；缺省 `opencode-go` |
+| `provider` | ❌ | LLM 提供方路由；缺省时自动在所有已配置 provider 中发现 |
 
 ## 配置常量（编辑 `plugin/vision-plugin.js`）
 
 | 常量 | 说明 |
 | --- | --- |
 | `VERSION` | 插件版本号（设置界面展示） |
-| `DEFAULT_PROVIDER` | LLM 路由（默认 `opencode-go`） |
-| `DEFAULT_MODEL` | 兜底视觉模型（默认 `qwen3.7-plus`） |
+| `DEFAULT_MODEL` | 兜底视觉模型 id（默认 `qwen3.7-plus`） |
+| *（无 provider 常量）* | 视觉路由在所有已配置 provider 中动态发现 |
 | `NATIVE_VISION_MODELS` | 原生视觉模型白名单（白名单内图片直接原生发送，不转写） |
 | `MODEL_PRIORITY` | 视觉模型自动选择优先级 |
 
 ## 注意事项
 
 - 插件是**进程内动态插件**：DSH 重启后需重新运行 `cordis_run`（`pluginId` / `packageId` 保持不变即可）；如需持久化，可将代码迁移为 host 组合中的插件行。
-- 界面配置的默认视觉模型保存在**进程内存**中（动态插件生命周期内有效），重启后回到自动选择。
+- 界面配置的默认视觉路由（provider + model）保存在**进程内存**中（动态插件生命周期内有效），重启后回到自动选择。
+- **没有配置 opencode-go 也能用**：插件会自动在其他已配置 provider 上发现视觉模型；若所有 provider 都没有视觉模型，转写会降级为占位文本而非失败。
 - 模型选择 UI 中，被 `modelOverrides` 声明的文本模型会显示"支持图片"标记——这是有意的（经过转写它确实能处理图片）。
 - 转写依赖部署路由存在可用的视觉模型；若路由变更，请同步更新 `DEFAULT_PROVIDER` / `NATIVE_VISION_MODELS` / `MODEL_PRIORITY`。
 

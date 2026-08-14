@@ -4,8 +4,8 @@
  * Registers a "视觉模型 / Vision Model" page in the DSH settings panel (slot
  * `settings.section`):
  *  - shows only the CURRENT final version;
- *  - lets the user pick the default vision model (auto-select or one of the
- *    image-capable models on the deployment route) and save it;
+ *  - lets the user pick the default vision route (provider + model) from every
+ *    image-capable model on all configured providers, or auto-select;
  *  - all copy is localized through the DSH `locale` service and follows the
  *    active interface language automatically (Settings → General → Language),
  *    including the settings nav label.
@@ -28,7 +28,7 @@ return {
       .dsh-vision-version { font-size: 12px; color: var(--dsh-text-2, #8b949e); }
       .dsh-vision-field { display: flex; flex-direction: column; gap: 6px; }
       .dsh-vision-field label { font-size: 13px; font-weight: 600; }
-      .dsh-vision-field select { padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit; font-size: 13px; max-width: 420px; }
+      .dsh-vision-field select { padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit; font-size: 13px; max-width: 460px; }
       .dsh-vision-actions { display: flex; align-items: center; gap: 10px; }
       .dsh-vision-save { padding: 5px 16px; border-radius: 8px; border: none; background: #2563eb; color: #fff; font-size: 13px; cursor: pointer; }
       .dsh-vision-save:disabled { opacity: .55; cursor: default; }
@@ -74,6 +74,7 @@ return {
       }))
     }
     const t = locale === undefined ? (key) => key : locale.bind('vision')
+    const ROUTE_SEP = '\u0000'
     slots.inject('settings.section', () => slots.register(
       { name: 'settings.section', id: 'vision', order: 25, label: () => t('settingsTitle') },
       () => {
@@ -92,7 +93,7 @@ return {
           host.call('vision/get-state', {}).then((s) => {
             if (!alive) return
             setState(s)
-            setSelected((s && s.configuredModel) || '')
+            setSelected((s && s.configuredRoute) ? s.configuredRoute.provider + ROUTE_SEP + s.configuredRoute.model : '')
           }).catch((e) => { if (alive) setError(String(e && e.message || e)) })
           return () => { alive = false }
         }, [])
@@ -100,7 +101,11 @@ return {
           setSaving(true)
           setSaved(false)
           setError(null)
-          host.call('vision/set-model', { model: selected || null }).then((s) => {
+          const idx = selected.indexOf(ROUTE_SEP)
+          const args = idx === -1
+            ? { model: null }
+            : { provider: selected.slice(0, idx), model: selected.slice(idx + ROUTE_SEP.length) }
+          host.call('vision/set-model', args).then((s) => {
             setState(s)
             setSaving(false)
             setSaved(true)
@@ -116,7 +121,9 @@ return {
         const visionModels = Array.isArray(state.models) ? state.models.filter((m) => m.image) : []
         const active = locale === undefined ? 'zh' : locale.getLocale().active
         const separator = active === 'zh' ? '、' : ', '
-        const currentModel = state.configuredModel || t('autoWithDefault', { model: state.defaultModel })
+        const currentModel = state.configuredRoute
+          ? state.configuredRoute.provider + '/' + state.configuredRoute.model
+          : t('autoWithDefault', { model: state.defaultModel })
         return React.createElement('div', { className: 'dsh-vision-card' },
           React.createElement('div', { className: 'dsh-vision-head' },
             React.createElement('span', { className: 'dsh-vision-badge' }, t('badgeRunning')),
@@ -131,14 +138,17 @@ return {
             },
               React.createElement('option', { value: '' }, t('autoSelect')),
               visionModels.map((m) =>
-                React.createElement('option', { key: m.id, value: m.id }, m.id + (m.name && m.name !== m.id ? '（' + m.name + '）' : '')))),
+                React.createElement('option', {
+                  key: m.provider + '/' + m.id,
+                  value: m.provider + ROUTE_SEP + m.id,
+                }, m.id + ' · ' + m.provider))),
             React.createElement('div', { className: 'dsh-vision-actions' },
               React.createElement('button', { className: 'dsh-vision-save', onClick: save, disabled: saving },
                 saving ? t('saving') : t('save')),
               saved ? React.createElement('span', { className: 'dsh-vision-saved' }, t('saved')) : null,
               error ? React.createElement('span', { className: 'dsh-vision-error' }, error) : null)),
           React.createElement('div', { className: 'dsh-vision-hint' },
-            React.createElement('div', null, t('current', { model: currentModel, provider: state.provider })),
+            React.createElement('div', null, t('current', { model: currentModel, provider: state.provider || '—' })),
             React.createElement('div', null, t('nativeVision', { list: Array.isArray(state.nativeVisionModels) ? state.nativeVisionModels.join(separator) : '' })),
             React.createElement('div', null, t('hint'))))
       },
