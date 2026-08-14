@@ -109,15 +109,31 @@ llm-pi-ai:
   providers:
     opencode-go:
       apiKeyEnv: OPENCODE_GO_API_KEY
-      # 文本模型声明为支持图片：聊天允许粘贴图片，
-      # 实际内容由本插件的 llm/stream 监听器转写为文字。
+      # 为所有纯文本模型声明图片能力：无论切换到哪个模型，聊天都允许粘贴
+      # 图片，实际内容由本插件的 llm/stream 监听器在发送前转写为文字。
+      # 原生视觉模型（qwen3.7-plus、kimi-k3 等）无需声明。
       modelOverrides:
         deepseek-v4-flash:
+          input: [text, image]
+        deepseek-v4-pro:
+          input: [text, image]
+        glm-5.1:
+          input: [text, image]
+        glm-5.2:
+          input: [text, image]
+        hy3:
+          input: [text, image]
+        qwen3.7-max:
+          input: [text, image]
+        minimax-m2.7:
+          input: [text, image]
+        mimo-v2.5-pro:
           input: [text, image]
 ```
 
 > settings.yaml 由 chokidar 热加载，修改后即时生效，无需重启。
-> 其他纯文本模型（如 `deepseek-v4-pro`）如需同样的能力，在 `modelOverrides` 中追加同名条目即可。
+> 请为**每一个**可能在含图片会话中切换到的纯文本模型声明该覆盖；否则切到该模型后
+> 粘贴图片会在插件转写之前就被宿主拒绝。
 
 ## 使用
 

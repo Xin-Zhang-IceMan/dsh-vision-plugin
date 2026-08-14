@@ -111,15 +111,33 @@ llm-pi-ai:
   providers:
     opencode-go:
       apiKeyEnv: OPENCODE_GO_API_KEY
-      # Advertise the text-only model as image-capable: the chat admits pasted
-      # images, and this plugin's llm/stream listener transcribes them to text.
+      # Advertise EVERY text-only model as image-capable: the chat admits pasted
+      # images regardless of the selected model, and this plugin's llm/stream
+      # listener transcribes them to text before dispatch. Models with native
+      # vision (qwen3.7-plus, kimi-k3, ...) need no override.
       modelOverrides:
         deepseek-v4-flash:
+          input: [text, image]
+        deepseek-v4-pro:
+          input: [text, image]
+        glm-5.1:
+          input: [text, image]
+        glm-5.2:
+          input: [text, image]
+        hy3:
+          input: [text, image]
+        qwen3.7-max:
+          input: [text, image]
+        minimax-m2.7:
+          input: [text, image]
+        mimo-v2.5-pro:
           input: [text, image]
 ```
 
 > settings.yaml is hot-reloaded by chokidar — no restart needed.
-> Add the same entry for other text-only models (e.g. `deepseek-v4-pro`) to extend the capability.
+> Declare the override for **every** text-only model you may switch to in a
+> session that contains images; otherwise pasting an image after switching to
+> that model is rejected before the plugin can transcribe it.
 
 ## Usage
 
