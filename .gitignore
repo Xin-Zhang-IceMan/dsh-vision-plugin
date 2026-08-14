@@ -1,0 +1,7 @@
+# Local test images / scratch files
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+.DS_Store
