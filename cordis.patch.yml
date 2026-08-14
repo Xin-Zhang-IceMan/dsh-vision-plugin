@@ -1,0 +1,10 @@
+# dsh-vision-plugin bundle patch: one dual-face row. The node half
+# (lib/index.js) registers the vision_analyze tool, the llm/stream image
+# transcription waterfall, and the /vision/api JSON endpoints; the same row
+# doubles as the browser roster entry (dsh.client declaration) so the web
+# shell loads the settings section UI from /plugins/dsh-vision-plugin/client.js.
+- insert:
+    - id: vision
+      name: 'dsh-vision-plugin'
+      inject: [fs, llm, attachments, tools, webServer]
+      config: {}

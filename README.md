@@ -4,9 +4,9 @@
 
 **English** | [中文](README.zh.md)
 
-![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-dynamic%20cordis-1f6feb)
+![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-bundle%20composition-1f6feb)
 
-**v1.1.0** · MIT License
+**v1.1.1** · MIT License
 
 ---
 
@@ -32,12 +32,63 @@ The image is transcribed by a vision model; the main model answers from the desc
 
 ## Quick start
 
-### Option 1: send a prompt to DSH (fastest)
+### Option A: permanent install — loads at every dsh start (recommended)
 
-Copy the block below and send it to a DSH session. The agent will install, configure, and verify everything:
+The repo root is a dsh *bundle package* (`dsh-vision-plugin`): the host half
+[`lib/index.js`](lib/index.js), the browser half [`lib/client.js`](lib/client.js),
+and the plugin row [`cordis.patch.yml`](cordis.patch.yml). Register the bundle in
+your profile and dsh mounts the plugin at boot — no `cordis_define`/`cordis_run`,
+survives restarts.
+
+**① Install with `dsh plugin`.** The package is published on npm, so one
+command is enough — `dsh plugin` installs it with pnpm, then automatically
+appends it to `dsh.profile.bundles` (the package declares `dsh.bundle`):
+
+```bash
+dsh plugin --profile web add dsh-vision-plugin
+```
+
+Developing on the plugin itself? Install your local checkout instead — edits
+apply on the next dsh restart, no registry round-trip:
+
+```bash
+dsh plugin --profile web add /path/to/deepseek-harness-plug
+# or run from inside the checkout directory:
+dsh plugin --profile web add .
+```
+
+Then confirm the row composes:
+
+```bash
+dsh --profile web --dump-config        # the composed tree shows the "vision" row
+```
+
+**② Declare image capability.** Before a message enters the session, the host checks the current model's input modalities. Declare image capability for your text-only models in `~/.dsh/settings.yaml` so they accept images (the plugin transcribes them afterwards):
+
+```yaml
+llm-pi-ai:
+  providers:
+    opencode-go:
+      apiKeyEnv: OPENCODE_GO_API_KEY
+      modelOverrides:
+        deepseek-v4-flash:
+          input: [text, image]
+        deepseek-v4-pro:
+          input: [text, image]
+        # add every other text-only model you may switch to;
+        # native vision models need no override
+```
+
+The file is hot-reloaded — no restart. **Declare every text-only model you might switch to**: otherwise pasting an image after switching to an undeclared model is rejected before the plugin can transcribe it.
+
+**③ Restart dsh.** On boot the loader mounts the `vision` row: `vision_analyze` is registered, the `llm/stream` image-translation waterfall is live, `/vision/api/state` answers the settings page, and the browser half is served at `/plugins/dsh-vision-plugin/client.js`. Verify: Settings → "Vision Model" page, `vision_analyze` in the tool list, then paste an image and ask.
+
+### Option B: dynamic plugin (no repo checkout) — process-local
+
+Prefer this when you don't want a local bundle checkout: send the block below to a DSH session and let the agent install it. Dynamic plugins are process-local — after a dsh restart, re-activate with `cordis_run` (same pluginId/packageId).
 
 ```text
-Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.1.0) for me:
+Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.1.1) for me:
 
 1. Obtain the plugin source (fetch via curl, or read from a local checkout):
    - Host half:   https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.js
@@ -68,30 +119,6 @@ Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.1.0) for me:
    - Pasting an image into the chat is transcribed automatically
 ```
 
-### Option 2: three manual steps
-
-**① Load the plugin.** Pass [`plugin/vision-plugin.js`](plugin/vision-plugin.js) as `code.host` and [`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) as `code.client` in one `cordis_define` call (any `idPrefix`, e.g. `visn`), then activate with `cordis_run` (the Client half needs one approval in the UI).
-
-**② Declare image capability.** Before a message enters the session, the host checks the current model's input modalities. Declare image capability for your text-only models in `~/.dsh/settings.yaml` so they accept images (the plugin transcribes them afterwards):
-
-```yaml
-llm-pi-ai:
-  providers:
-    opencode-go:
-      apiKeyEnv: OPENCODE_GO_API_KEY
-      modelOverrides:
-        deepseek-v4-flash:
-          input: [text, image]
-        deepseek-v4-pro:
-          input: [text, image]
-        # add every other text-only model you may switch to;
-        # native vision models need no override
-```
-
-The file is hot-reloaded — no restart. **Declare every text-only model you might switch to**: otherwise pasting an image after switching to an undeclared model is rejected before the plugin can transcribe it.
-
-**③ Chat.** Paste an image and ask away.
-
 ## Settings page
 
 Open DSH settings (bottom-left ⚙️) → "Vision Model" page:
@@ -111,7 +138,7 @@ That model isn't declared in settings.yaml. Add it as in step ② above — hot-
 No problem. Since v1.1.0 the plugin scans all configured providers and picks the first route with a vision model. Only when no provider has one does it degrade (the conversation continues, with a note that the image is unavailable).
 
 **Does it survive a DSH restart?**
-Dynamic plugins are process-local. After a restart, re-run `cordis_run` with the same pluginId/packageId. For a permanent install, migrate the code into a host-composition plugin row.
+With the permanent install (Option A) it loads at every boot — that's the whole point. Dynamic plugins (Option B) are process-local: after a restart, re-run `cordis_run` with the same pluginId/packageId.
 
 **Does it cost extra?**
 Each transcription is one vision-model call; the same image with the same question is cached, so follow-up turns reuse it. Vision model priority: settings config > call parameter > auto-select.
@@ -119,11 +146,18 @@ Each transcription is one vision-model call; the same image with the same questi
 **What happens when the vision model errors?**
 The conversation never breaks: partial output is kept; a total failure retries once with a fallback model; if that fails too, the model is told the image is unavailable and the chat continues.
 
+## Bundle layout
+
+- [`lib/index.js`](lib/index.js) — host half (composition plugin row `vision`): `vision_analyze` tool, the `llm/stream` translation waterfall, and the `/vision/api/state` + `/vision/api/model` JSON API. Zero non-builtin imports on purpose (pnpm does not install the dependencies of `link:` profile plugins).
+- [`lib/client.js`](lib/client.js) — browser half (`dsh.client` roster entry): the "Vision Model" settings section, served by the web shell at `/plugins/dsh-vision-plugin/client.js`.
+- [`cordis.patch.yml`](cordis.patch.yml) — the loader patch row mounting the bundle (`dsh.bundle.patch`).
+- [`plugin/vision-plugin.js`](plugin/vision-plugin.js) / [`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) — the dynamic-plugin sources used by Option B (same engine, `harness` API).
+
 ## Under the hood (optional)
 
 Flow: an image enters the session → the `llm/stream` listener checks the target model — native vision models (whitelist) see the image directly; text-only models get a vision-model transcription dispatched in its place. Translation requests carry a Symbol marker to prevent recursion, and results are cached by image + question.
 
-Tunable constants live at the top of [`plugin/vision-plugin.js`](plugin/vision-plugin.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist), `MODEL_PRIORITY` (auto-select order).
+Tunable constants live at the top of [`lib/index.js`](lib/index.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist), `MODEL_PRIORITY` (auto-select order).
 
 ## License
 
