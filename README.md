@@ -1,68 +1,43 @@
 # dsh-vision-plugin
 
-> Give text-only DSH models (e.g. deepseek-v4) vision — a dynamic Cordis plugin for DeepSeek Harness, with a bilingual settings UI.
+> Give DeepSeek Harness text-only models a pair of eyes.
 
 **English** | [中文](README.zh.md)
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-dynamic%20cordis-1f6feb)
 
-**Current version: v1.1.0** — the UI shows only the current version, no version history.
+**v1.1.0** · MIT License
 
-## Features
+---
 
-1. **`vision_analyze` tool** — the model can call it directly to analyze a local image file (PNG / JPEG / WebP / GIF) and get a detailed text description from a vision model.
-2. **Auto-translation of pasted images** — images pasted/uploaded into the chat enter the session; when the target model is text-only, an `llm/stream` waterfall listener automatically transcribes them into text via a vision model before dispatch. **Text-only models can "see" images.**
-3. **Bilingual settings UI** — a "视觉模型 / Vision Model" page in the DSH settings panel: shows the current version status and lets you configure the default vision model; the UI language follows the DSH interface language automatically (Settings → General → Language).
+The deepseek-v4 family is text-only: you can paste screenshots and photos into the chat, but the model can't see them. This plugin sits in between — images are first sent to a vision model (qwen3.7-plus, kimi-k3, …) which transcribes them into text, and that text is what the main model reads. **Paste an image, switch to any text-only model, and it just works.**
 
-## How it works
+## What it looks like
 
 ```
-Paste image → Host admission check (modelOverrides declares image capability → admitted)
-           → session message carries image blocks
-           → llm/stream waterfall listener:
-               1. no images → pass through (zero overhead)
-               2. already handled by this plugin (Symbol marker) → pass through (no recursion)
-               3. target model is a native vision model (whitelist) → pass through (native image input)
-               4. otherwise (text-only model) → vision model transcribes to text → re-dispatch
-           → main model answers from the text description
+You: What's this?                    (pasted a Clash Verge logo)
+
+Assistant: That's the Clash Verge logo. A black cat silhouette on the left,
+           the text "Clash Verge" on the right. It's a GUI client for the
+           Clash proxy core…
 ```
 
-**Vision route discovery (no hard-coded provider):** the plugin walks every
-configured LLM provider — the calling request's provider first, then all
-`llm.listProviders()` — and picks the first image-capable model (native-vision
-whitelist first, then `MODEL_PRIORITY` order, then any remaining image-capable
-model). Transcription therefore follows whatever route the conversation uses,
-and works as long as **at least one** configured provider exposes a vision
-model — no extra API keys.
-- Vision model selection priority: **UI config > per-call override > auto-select** (`qwen3.7-plus → kimi-k3 → grok-4.5 → minimax-m3 → …`).
-- Translation results are cached by `attachmentId + question` (up to 300 entries), so follow-up turns reuse one vision call.
-- The listener lives on the root context and serves every session; it is removed automatically when the plugin stops.
+The image is transcribed by a vision model; the main model answers from the description, as naturally as if it could see.
 
-## Settings UI
+## Three things it does
 
-DSH settings panel (bottom-left ⚙️) → **Vision Model** page:
+1. **Paste an image and ask** — paste or drop an image into the chat and any text-only model can answer about it. No special command needed.
+2. **`vision_analyze` tool** — the model can call it directly to analyze a local image file, with an optional question ("What's the value in row 3 of this table?") and an optional vision model override.
+3. **Settings page for the vision model** — a "Vision Model" page in the DSH settings panel: pick the default vision model, see the active route. Bilingual, follows the UI language.
 
-- **Status badge**: `● Running` + `v1.0.1` — only the current version is shown.
-- **Default vision model**: dropdown with "Auto-select (recommended)" or any image-capable model (e.g. `kimi-k3`, `grok-4.5`); save takes effect immediately.
-- **Info area**: currently effective model, LLM route, native-vision whitelist, and a short description of the translation mechanism.
+## Quick start
 
-## Fault tolerance
+### Option 1: send a prompt to DSH (fastest)
 
-| Scenario | Behavior |
-| --- | --- |
-| Vision model produced content but the stream errored at the end | **Keep the generated content**, not treated as failure |
-| Vision model totally failed (no output) | **Retry once with a fallback model** |
-| Retry still fails | **Degrade to a placeholder block**, the conversation continues |
-| Errors | **Real upstream reason surfaced** (code / HTTP status) |
-
-## Installation
-
-### 0. One-click install (send this prompt to DSH)
-
-Copy the block below and send it to DSH (a session running the `cordis` agent preset). The agent will fetch the source, define and run the plugin, configure `settings.yaml`, and verify the install:
+Copy the block below and send it to a DSH session. The agent will install, configure, and verify everything:
 
 ```text
-Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.0.1) for me:
+Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.1.0) for me:
 
 1. Obtain the plugin source (fetch via curl, or read from a local checkout):
    - Host half:   https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.js
@@ -77,8 +52,8 @@ Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.0.1) for me:
 
 3. Activate it with cordis_run (mode: "run"); approve the Client half when prompted.
 
-4. If ~/.dsh/settings.yaml does not yet declare image capability for the text-only
-   default model, add (hot-reloaded, no restart needed):
+4. If ~/.dsh/settings.yaml does not yet declare image capability for text-only
+   models, add (hot-reloaded, no restart needed):
    llm-pi-ai:
      providers:
        opencode-go:
@@ -89,88 +64,66 @@ Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.0.1) for me:
 
 5. Verify:
    - Tool.listTools shows vision_analyze
-   - The settings panel has a "Vision Model" page (bilingual, follows the UI language)
+   - The settings panel has a "Vision Model" page
    - Pasting an image into the chat is transcribed automatically
 ```
 
-### 1. Load the plugin (DSH dynamic-plugin mechanism)
+### Option 2: three manual steps
 
-Pass the content of [`plugin/vision-plugin.js`](plugin/vision-plugin.js) as `code.host` and [`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) as `code.client` in one `cordis_define` call (pick any `idPrefix`, e.g. `visn`), then activate with `cordis_run`:
+**① Load the plugin.** Pass [`plugin/vision-plugin.js`](plugin/vision-plugin.js) as `code.host` and [`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) as `code.client` in one `cordis_define` call (any `idPrefix`, e.g. `visn`), then activate with `cordis_run` (the Client half needs one approval in the UI).
 
-```
-cordis_define  → returns pluginId / packageId
-cordis_run     → activates (the Client half needs one approval in the UI)
-```
-
-### 2. Configure the deployment (let text-only models accept pasted images)
-
-Before a message enters the session, the host checks the current model's `inputModalities`. To let a text-only model pass the check (images are then transcribed by this plugin), declare image capability for it in `~/.dsh/settings.yaml`:
+**② Declare image capability.** Before a message enters the session, the host checks the current model's input modalities. Declare image capability for your text-only models in `~/.dsh/settings.yaml` so they accept images (the plugin transcribes them afterwards):
 
 ```yaml
 llm-pi-ai:
   providers:
     opencode-go:
       apiKeyEnv: OPENCODE_GO_API_KEY
-      # Advertise EVERY text-only model as image-capable: the chat admits pasted
-      # images regardless of the selected model, and this plugin's llm/stream
-      # listener transcribes them to text before dispatch. Models with native
-      # vision (qwen3.7-plus, kimi-k3, ...) need no override.
       modelOverrides:
         deepseek-v4-flash:
           input: [text, image]
         deepseek-v4-pro:
           input: [text, image]
-        glm-5.1:
-          input: [text, image]
-        glm-5.2:
-          input: [text, image]
-        hy3:
-          input: [text, image]
-        qwen3.7-max:
-          input: [text, image]
-        minimax-m2.7:
-          input: [text, image]
-        mimo-v2.5-pro:
-          input: [text, image]
+        # add every other text-only model you may switch to;
+        # native vision models need no override
 ```
 
-> settings.yaml is hot-reloaded by chokidar — no restart needed.
-> Declare the override for **every** text-only model you may switch to in a
-> session that contains images; otherwise pasting an image after switching to
-> that model is rejected before the plugin can transcribe it.
+The file is hot-reloaded — no restart. **Declare every text-only model you might switch to**: otherwise pasting an image after switching to an undeclared model is rejected before the plugin can transcribe it.
 
-## Usage
+**③ Chat.** Paste an image and ask away.
 
-### Paste images
+## Settings page
 
-Paste (or drag-and-drop / upload) an image into the chat with a sentence like "What's in this image?" — text-only models will answer it.
+Open DSH settings (bottom-left ⚙️) → "Vision Model" page:
 
-### vision_analyze tool
+- Status badge with run state and version
+- Dropdown to pick the default vision model (auto-select or a specific model) — saved changes take effect immediately
+- Notes showing the active model and route
 
-| Parameter | Required | Description |
-| --- | --- | --- |
-| `path` | ✅ | Image file path (PNG/JPEG/WebP/GIF) |
-| `question` | ❌ | Specific question about the image; defaults to a full description |
-| `model` | ❌ | Vision model id override (e.g. `kimi-k3`); defaults to UI config → auto-select |
-| `provider` | ❌ | LLM provider route override; omitted = discovered automatically across all configured providers |
+The UI language follows DSH (Settings → General → Language), switching between Chinese and English automatically.
 
-## Constants (edit `plugin/vision-plugin.js`)
+## FAQ
 
-| Constant | Description |
-| --- | --- |
-| `VERSION` | Plugin version shown in the settings UI |
-| `DEFAULT_MODEL` | Fallback vision model id (default `qwen3.7-plus`) |
-| *(no provider constant)* | Vision routes are discovered dynamically across all configured providers |
-| `NATIVE_VISION_MODELS` | Native-vision whitelist (images sent natively, not transcribed) |
-| `MODEL_PRIORITY` | Auto-selection priority for vision models |
+**Pasting an image fails after switching to another text-only model?**
+That model isn't declared in settings.yaml. Add it as in step ② above — hot-reloaded, effective immediately.
 
-## Notes
+**What if opencode-go isn't configured?**
+No problem. Since v1.1.0 the plugin scans all configured providers and picks the first route with a vision model. Only when no provider has one does it degrade (the conversation continues, with a note that the image is unavailable).
 
-- The plugin is a **process-local dynamic plugin**: after a DSH restart, re-run `cordis_run` with the same `pluginId` / `packageId`; to persist it, migrate the code into a host-composition plugin row.
-- The UI-configured default vision route (provider + model) lives in **process memory** (valid for the plugin's lifetime); a restart returns to auto-select.
-- No `opencode-go` configured? The plugin still works — it discovers vision models on any other configured provider; if none exists, transcription degrades to a placeholder instead of failing.
-- Text-only models advertised via `modelOverrides` show an "image-capable" mark in the model picker — intentional (they do handle images through transcription).
-- Translation depends on the deployment route exposing vision models; update `DEFAULT_PROVIDER` / `NATIVE_VISION_MODELS` / `MODEL_PRIORITY` if the route changes.
+**Does it survive a DSH restart?**
+Dynamic plugins are process-local. After a restart, re-run `cordis_run` with the same pluginId/packageId. For a permanent install, migrate the code into a host-composition plugin row.
+
+**Does it cost extra?**
+Each transcription is one vision-model call; the same image with the same question is cached, so follow-up turns reuse it. Vision model priority: settings config > call parameter > auto-select.
+
+**What happens when the vision model errors?**
+The conversation never breaks: partial output is kept; a total failure retries once with a fallback model; if that fails too, the model is told the image is unavailable and the chat continues.
+
+## Under the hood (optional)
+
+Flow: an image enters the session → the `llm/stream` listener checks the target model — native vision models (whitelist) see the image directly; text-only models get a vision-model transcription dispatched in its place. Translation requests carry a Symbol marker to prevent recursion, and results are cached by image + question.
+
+Tunable constants live at the top of [`plugin/vision-plugin.js`](plugin/vision-plugin.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist), `MODEL_PRIORITY` (auto-select order).
 
 ## License
 

@@ -1,67 +1,43 @@
 # dsh-vision-plugin
 
-> 让纯文本模型（如 deepseek-v4）拥有视觉能力的 DeepSeek Harness 动态 Cordis 插件。带双语设置界面，可配置视觉模型。
+> 给 DeepSeek Harness 的纯文本模型装上"眼睛"。
 
 [English](README.md) | **中文**
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-dynamic%20cordis-1f6feb)
 
-**当前版本：v1.1.0** — 界面只显示当前版本，无历史版本残留。
+**v1.1.0** · MIT License
 
-## 功能
+---
 
-1. **`vision_analyze` 工具** — 模型可直接调用，分析本地图片文件（PNG / JPEG / WebP / GIF），返回视觉模型的详细文字描述。
-2. **粘贴图片自动转写** — 在对话框粘贴/上传的图片会进入会话；当目标模型是纯文本模型时，`llm/stream` waterfall 监听器自动调用视觉模型把图片转写为文字描述，再交给主模型作答。**文本模型也能"看见"图片**。
-3. **双语设置界面** — DSH 设置面板新增"视觉模型 / Vision Model"页：显示当前版本状态，下拉配置默认视觉模型（自动选择或指定模型），保存立即生效；界面语言**跟随 DSH 界面语言自动切换**（设置 → 通用 → 语言）。
+deepseek-v4 系列是纯文本模型：你可以在对话框里粘贴截图、照片，但它看不见。这个插件在中间加了一层——图片先交给视觉模型（qwen3.7-plus、kimi-k3 等）转写成文字描述，再把描述交给主模型。从此**粘贴图片、切换任何文本模型，都能正常"看图"**。
 
-## 工作原理
+## 效果
 
 ```
-粘贴图片 → 宿主入会话校验（modelOverrides 声明图片能力 → 放行）
-        → 会话消息携带 image 块
-        → llm/stream waterfall 监听器：
-            1. 无图片 → 直接放行（零开销）
-            2. 已由本插件处理（Symbol 标记）→ 放行（防递归）
-            3. 目标模型是原生视觉模型（白名单）→ 放行（原生图片输入）
-            4. 其他（纯文本模型）→ 视觉模型转写为文字 → 重新派发
-        → 主模型基于文字描述正常作答
+你：这是什么？                          （粘贴了一张 Clash Verge Logo）
+
+助手：这是 Clash Verge 的标志（Logo）。左侧是一个黑色的猫头剪影，
+     右侧是文字 "Clash Verge"。它是一款基于 Clash 内核的图形化
+     代理客户端软件……
 ```
 
-**视觉路由动态发现（不依赖任何写死的 provider）**：插件会遍历所有已配置的
-LLM provider——优先使用触发请求自身的 provider，然后依次查询
-`llm.listProviders()` 中的每个路由——选取第一个支持图片的模型（优先原生视觉
-白名单，其次 `MODEL_PRIORITY` 顺序，最后是其余支持图片的模型）。转写因此跟随
-会话当前使用的路由；只要**任意一个**已配置 provider 提供视觉模型即可工作，
-**无需额外 API Key**。
-- 视觉模型选择优先级：**界面配置 > 调用参数指定 > 自动选择**（`qwen3.7-plus → kimi-k3 → grok-4.5 → minimax-m3 → …`）。
-- 转写结果按 `attachmentId + 问题文本` 缓存（上限 300 条），多轮追问不重复调用视觉模型。
-- 监听器注册在根上下文，对所有会话生效；插件停止时自动卸载。
+图片由视觉模型自动转写，主模型看到的是文字描述，回答和读图效果一样自然。
 
-## 设置界面
+## 三个能力
 
-DSH 设置面板（左下角 ⚙️）→ **视觉模型** 页：
+1. **粘贴图片直接问** —— 对话框粘贴或拖入图片，任意文本模型都能回答图片内容，不需要任何特殊指令。
+2. **`vision_analyze` 工具** —— 模型可以主动调用它分析本地图片文件，还能指定问题（"图中表格第三行数据是多少？"）和具体视觉模型。
+3. **设置页配置视觉模型** —— DSH 设置面板新增"视觉模型"页：选默认视觉模型、看当前路由，中英双语、跟随界面语言。
 
-- **状态徽章**：`● 运行中` + `v1.0.1`——只显示当前版本。
-- **默认视觉模型**：下拉选择「自动选择（推荐）」或任一支持图片的模型（如 `kimi-k3`、`grok-4.5`），点保存立即生效。
-- **信息区**：当前生效模型、LLM 路由、原生视觉模型白名单列表、转写机制说明。
+## 快速开始
 
-## 容错设计
+### 方式一：把提示词发给 DSH（最快）
 
-| 场景 | 行为 |
-| --- | --- |
-| 视觉模型输出了内容但流结束时报错 | **保留已生成内容**，不判定失败 |
-| 视觉模型完全失败（无输出） | **自动换备用模型重试一次** |
-| 重试仍失败 | **降级为占位文本**，对话继续，不中断整轮 |
-| 错误信息 | **透传上游真实原因**（错误码 / HTTP 状态） |
-
-## 安装
-
-### 0. 一键安装（把下面的提示词发送给 DSH）
-
-复制下面的提示词，发送给 DSH（运行 `cordis` agent 预设的会话）。Agent 会自动获取源码、定义并运行插件、配置 `settings.yaml` 并完成验证：
+复制下面这段，发给一个 DSH 会话，Agent 会自己完成安装、配置和验证：
 
 ```text
-请帮我安装 dsh-vision-plugin（DeepSeek Harness 视觉插件 v1.0.1）：
+请帮我安装 dsh-vision-plugin（DeepSeek Harness 视觉插件 v1.1.0）：
 
 1. 获取插件源码（用 curl 下载，或从本地检出目录读取）：
    - Host 半部：  https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.js
@@ -76,7 +52,7 @@ DSH 设置面板（左下角 ⚙️）→ **视觉模型** 页：
 
 3. 用 cordis_run 激活（mode: "run"）；Client 部分提示审批时请批准。
 
-4. 如果 ~/.dsh/settings.yaml 尚未为纯文本默认模型声明图片能力，请添加（热加载，无需重启）：
+4. 如果 ~/.dsh/settings.yaml 尚未为纯文本模型声明图片能力，请添加（热加载，无需重启）：
    llm-pi-ai:
      providers:
        opencode-go:
@@ -87,86 +63,65 @@ DSH 设置面板（左下角 ⚙️）→ **视觉模型** 页：
 
 5. 验证：
    - Tool.listTools 中能看到 vision_analyze
-   - 设置面板出现"视觉模型 / Vision Model"页（双语，跟随界面语言）
+   - 设置面板出现"视觉模型 / Vision Model"页
    - 在对话框粘贴图片会被自动转写
 ```
 
-### 1. 加载插件（DSH 动态插件机制）
+### 方式二：手动三步
 
-把 [`plugin/vision-plugin.js`](plugin/vision-plugin.js) 的内容作为 `code.host`、[`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) 的内容作为 `code.client`，传入同一次 `cordis_define`（`idPrefix` 自拟，如 `visn`），然后用 `cordis_run` 激活：
+**① 加载插件。** 把 [`plugin/vision-plugin.js`](plugin/vision-plugin.js) 的内容作为 `code.host`、[`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) 的内容作为 `code.client`，在同一次 `cordis_define` 中定义（`idPrefix` 自拟，如 `visn`），再 `cordis_run` 激活（Client 部分需在界面批准一次）。
 
-```
-cordis_define  → 返回 pluginId / packageId
-cordis_run     → 激活（Client 部分需在 UI 中批准一次）
-```
-
-### 2. 配置部署（让纯文本模型能接收粘贴图片）
-
-宿主在消息进入会话前会校验当前模型的 `inputModalities`。为了让纯文本模型通过校验（图片进入会话后由本插件转写），需要在 `~/.dsh/settings.yaml` 中为其声明图片能力：
+**② 声明图片能力。** 宿主在消息进入会话前会检查当前模型的输入能力。为了让文本模型收下图片（收下后由插件转写），在 `~/.dsh/settings.yaml` 里给它们声明：
 
 ```yaml
 llm-pi-ai:
   providers:
     opencode-go:
       apiKeyEnv: OPENCODE_GO_API_KEY
-      # 为所有纯文本模型声明图片能力：无论切换到哪个模型，聊天都允许粘贴
-      # 图片，实际内容由本插件的 llm/stream 监听器在发送前转写为文字。
-      # 原生视觉模型（qwen3.7-plus、kimi-k3 等）无需声明。
       modelOverrides:
         deepseek-v4-flash:
           input: [text, image]
         deepseek-v4-pro:
           input: [text, image]
-        glm-5.1:
-          input: [text, image]
-        glm-5.2:
-          input: [text, image]
-        hy3:
-          input: [text, image]
-        qwen3.7-max:
-          input: [text, image]
-        minimax-m2.7:
-          input: [text, image]
-        mimo-v2.5-pro:
-          input: [text, image]
+        # 其他可能切换到的文本模型同理；原生视觉模型无需声明
 ```
 
-> settings.yaml 由 chokidar 热加载，修改后即时生效，无需重启。
-> 请为**每一个**可能在含图片会话中切换到的纯文本模型声明该覆盖；否则切到该模型后
-> 粘贴图片会在插件转写之前就被宿主拒绝。
+文件会被自动热加载，不用重启。**建议把每个你可能用到的文本模型都写上**——否则切到未声明的模型后粘贴图片，会在插件转写之前就被拒绝。
 
-## 使用
+**③ 开聊。** 粘贴一张图片试试。
 
-### 粘贴图片
+## 设置界面
 
-直接在对话框粘贴（或拖拽/上传）图片，配上一句话（如"这张图里有什么？"），纯文本模型即可回答图片内容。
+打开 DSH 左下角 ⚙️ 设置 → "视觉模型"页：
 
-### vision_analyze 工具
+- 状态徽章显示运行状态和版本号
+- 下拉框选择默认视觉模型（自动选择，或指定某个模型）——保存立即生效
+- 底部说明当前生效的模型和路由
 
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `path` | ✅ | 图片文件路径（PNG/JPEG/WebP/GIF） |
-| `question` | ❌ | 对图片的具体问题；缺省时输出整图详细描述 |
-| `model` | ❌ | 指定视觉模型 id（如 `kimi-k3`）；缺省按 界面配置 > 自动选择 |
-| `provider` | ❌ | LLM 提供方路由；缺省时自动在所有已配置 provider 中发现 |
+界面语言跟随 DSH 设置（通用 → 语言），中英文自动切换。
 
-## 配置常量（编辑 `plugin/vision-plugin.js`）
+## 常见问题
 
-| 常量 | 说明 |
-| --- | --- |
-| `VERSION` | 插件版本号（设置界面展示） |
-| `DEFAULT_MODEL` | 兜底视觉模型 id（默认 `qwen3.7-plus`） |
-| *（无 provider 常量）* | 视觉路由在所有已配置 provider 中动态发现 |
-| `NATIVE_VISION_MODELS` | 原生视觉模型白名单（白名单内图片直接原生发送，不转写） |
-| `MODEL_PRIORITY` | 视觉模型自动选择优先级 |
+**切到其他文本模型后粘贴图片被拒？**
+settings.yaml 里没有给那个模型声明图片能力。按上面"方式二 ②"补上即可，热加载立即生效。
 
-## 注意事项
+**没有配置 opencode-go 怎么办？**
+不影响。v1.1.0 起插件会遍历所有已配置的 provider，自动找到第一个带视觉模型的路由；一个都没有时才会降级（对话继续，提示图片不可用）。
 
-- 插件是**进程内动态插件**：DSH 重启后需重新运行 `cordis_run`（`pluginId` / `packageId` 保持不变即可）；如需持久化，可将代码迁移为 host 组合中的插件行。
-- 界面配置的默认视觉路由（provider + model）保存在**进程内存**中（动态插件生命周期内有效），重启后回到自动选择。
-- **没有配置 opencode-go 也能用**：插件会自动在其他已配置 provider 上发现视觉模型；若所有 provider 都没有视觉模型，转写会降级为占位文本而非失败。
-- 模型选择 UI 中，被 `modelOverrides` 声明的文本模型会显示"支持图片"标记——这是有意的（经过转写它确实能处理图片）。
-- 转写依赖部署路由存在可用的视觉模型；若路由变更，请同步更新 `DEFAULT_PROVIDER` / `NATIVE_VISION_MODELS` / `MODEL_PRIORITY`。
+**DSH 重启后插件还在吗？**
+动态插件是进程内的，重启后需要重新 `cordis_run`（pluginId / packageId 不变，重新激活即可）。想一劳永逸，可以把代码迁移成 host 组合里的插件行。
+
+**会多花钱吗？**
+转写会调用一次视觉模型；同一张图、同一个问题有缓存，多轮追问不会重复调用。视觉模型优先级：设置页配置 > 调用参数 > 自动选择。
+
+**视觉模型出错了会怎样？**
+不会中断对话：输出了一部分就保留一部分；完全失败就换备用模型再试一次；还不行就告诉模型"图片暂时不可用"，对话照常继续。
+
+## 深入细节（可选阅读）
+
+工作流程：图片进入会话 → `llm/stream` 监听器判断目标模型——原生视觉模型（白名单）直接看原图；文本模型则先由视觉模型转写成文字再派发。转写请求带 Symbol 标记防递归，结果按"图片 + 问题"缓存。
+
+可调常量都在 [`plugin/vision-plugin.js`](plugin/vision-plugin.js) 顶部注释里：`DEFAULT_MODEL`（兜底模型）、`NATIVE_VISION_MODELS`（原生视觉白名单）、`MODEL_PRIORITY`（自动选择顺序）。
 
 ## License
 
