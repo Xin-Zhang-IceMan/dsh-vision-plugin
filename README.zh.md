@@ -6,7 +6,7 @@
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-bundle%20composition-1f6feb)
 
-**v1.1.1** · MIT License
+**v1.2.0** · MIT License
 
 ---
 
@@ -32,7 +32,7 @@ deepseek-v4 系列是纯文本模型：你可以在对话框里粘贴截图、�
 
 ## 快速开始
 
-### 方式 A：永久安装 —— 每次 dsh 启动自动载入（推荐）
+### 永久安装 —— 每次 dsh 启动自动载入
 
 本仓库根目录就是一个 dsh **bundle 包**（`dsh-vision-plugin`）：宿主半部
 [`lib/index.js`](lib/index.js)、浏览器半部 [`lib/client.js`](lib/client.js)、
@@ -78,47 +78,12 @@ llm-pi-ai:
 
 **③ 重启 dsh。** 启动时 loader 会挂载 `vision` 行：注册 `vision_analyze` 工具、开启 `llm/stream` 图片转写瀑布、`/vision/api/state` 服务设置页，浏览器半部由 `/plugins/dsh-vision-plugin/client.js` 提供。验证：设置面板出现"视觉模型"页、工具列表里有 `vision_analyze`，然后粘贴图片开聊。
 
-### 方式 B：动态插件（不需要本地仓库检出）—— 进程内生效
-
-不想维护本地 bundle 检出时用这个：把下面这段发给一个 DSH 会话，让 Agent 替你安装。动态插件是进程内的——dsh 重启后需要重新 `cordis_run`（pluginId / packageId 不变）。
-
-```text
-请帮我安装 dsh-vision-plugin（DeepSeek Harness 视觉插件 v1.1.1）：
-
-1. 获取插件源码（用 curl 下载，或从本地检出目录读取）：
-   - Host 半部：  https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.js
-   - Client 半部：https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.client.js
-
-2. 用 cordis_define 定义动态 Cordis 插件：
-   - kind: "new"，idPrefix: "visn"
-   - code.host   = vision-plugin.js 的完整内容（函数体）
-   - code.client = vision-plugin.client.js 的完整内容（函数体）
-   - name: "Vision Assistant"
-   - purpose: 一句话描述插件用途
-
-3. 用 cordis_run 激活（mode: "run"）；Client 部分提示审批时请批准。
-
-4. 如果 ~/.dsh/settings.yaml 尚未为纯文本模型声明图片能力，请添加（热加载，无需重启）：
-   llm-pi-ai:
-     providers:
-       opencode-go:
-         apiKeyEnv: OPENCODE_GO_API_KEY
-         modelOverrides:
-           deepseek-v4-flash:
-             input: [text, image]
-
-5. 验证：
-   - Tool.listTools 中能看到 vision_analyze
-   - 设置面板出现"视觉模型 / Vision Model"页
-   - 在对话框粘贴图片会被自动转写
-```
-
 ## 设置界面
 
 打开 DSH 左下角 ⚙️ 设置 → "视觉模型"页：
 
 - 状态徽章显示运行状态和版本号
-- 下拉框选择默认视觉模型（自动选择，或指定某个模型）——保存立即生效
+- 下拉框选择默认视觉模型（自动选择，或指定某个模型）——保存立即生效，且选择会被**记住**（浏览器本地存储），下次启动自动恢复
 - 底部说明当前生效的模型和路由
 
 界面语言跟随 DSH 设置（通用 → 语言），中英文自动切换。
@@ -126,32 +91,39 @@ llm-pi-ai:
 ## 常见问题
 
 **切到其他文本模型后粘贴图片被拒？**
-settings.yaml 里没有给那个模型声明图片能力。按上面"方式 A ②"补上即可，热加载立即生效。
+settings.yaml 里没有给那个模型声明图片能力。按上面步骤 ② 补上即可，热加载立即生效。
 
 **没有配置 opencode-go 怎么办？**
 不影响。v1.1.0 起插件会遍历所有已配置的 provider，自动找到第一个带视觉模型的路由；一个都没有时才会降级（对话继续，提示图片不可用）。
 
 **DSH 重启后插件还在吗？**
-永久安装（方式 A）每次启动都会自动载入——这正是它的目的。动态插件（方式 B）是进程内的，重启后需要重新 `cordis_run`。
+会。永久安装把 bundle 注册进 profile 的 `dsh.profile.bundles`，每次启动都会自动载入——这正是它的目的。
 
 **会多花钱吗？**
-转写会调用一次视觉模型；同一张图、同一个问题有缓存，多轮追问不会重复调用。视觉模型优先级：设置页配置 > 调用参数 > 自动选择。
+转写会调用一次视觉模型；同一张图、同一个问题有缓存，多轮追问不会重复调用。视觉模型优先级：工具显式参数（model/provider）> 设置页配置 > 自动选择。
+
+**我选的视觉模型会被记住吗？**
+会。v1.2.0 起设置页的选择保存在浏览器（localStorage），下次启动 dsh 自动恢复；自动转写瀑布也走同一路由。宿主侧的路由本身是进程内的。
 
 **视觉模型出错了会怎样？**
-不会中断对话：输出了一部分就保留一部分；完全失败就换备用模型再试一次；还不行就告诉模型"图片暂时不可用"，对话照常继续。
+不会中断对话：输出了一部分就保留一部分；完全失败就换备用模型再试一次；视觉调用挂起超过两分钟会被掐断并视为失败（从而触发备用模型重试）；还不行就告诉模型"图片暂时不可用"，对话照常继续。
 
 ## Bundle 结构
 
-- [`lib/index.js`](lib/index.js) —— 宿主半部（组合插件行 `vision`）：`vision_analyze` 工具、`llm/stream` 转写瀑布、`/vision/api/state` 与 `/vision/api/model` JSON 接口。刻意零第三方 import（pnpm 不会为 `link:` profile 插件安装依赖）。
-- [`lib/client.js`](lib/client.js) —— 浏览器半部（`dsh.client` 名册条目）："视觉模型"设置页，由 web shell 在 `/plugins/dsh-vision-plugin/client.js` 提供。
+- [`lib/engine.js`](lib/engine.js) —— **共享引擎，单一事实源**：`vision_analyze` 工具、`llm/stream` 转写瀑布、路由发现、缓存与超时。刻意零 import（pnpm 不会为 `link:` profile 插件安装依赖）。
+- [`lib/index.js`](lib/index.js) —— bundle 宿主适配器（组合插件行 `vision`）：在 `ctx.webServer` 上注册工具、瀑布与 `/vision/api/state`、`/vision/api/model` JSON 接口。
+- [`lib/client.js`](lib/client.js) —— bundle 浏览器半部（`dsh.client` 名册条目）："视觉模型"设置页，由 web shell 在 `/plugins/dsh-vision-plugin/client.js` 提供。
 - [`cordis.patch.yml`](cordis.patch.yml) —— 挂载该 bundle 的 loader 补丁行（`dsh.bundle.patch`）。
-- [`plugin/vision-plugin.js`](plugin/vision-plugin.js) / [`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) —— 方式 B 使用的动态插件源码（同一引擎，`harness` API）。
+- [`scripts/check.js`](scripts/check.js) —— 一致性检查（`npm run check`）：校验版本号在各处一致、`lib/engine.js` 保持零 import。
+- [`test/engine.test.js`](test/engine.test.js) —— 引擎测试套件（`npm test`）：路由发现、override 优先级、缓存/去重、超时、瀑布、工具。
+
+开发插件本身：改 [`lib/engine.js`](lib/engine.js)（宿主逻辑）或 [`lib/client.js`](lib/client.js)（界面），然后 `npm run check && npm test`。
 
 ## 深入细节（可选阅读）
 
-工作流程：图片进入会话 → `llm/stream` 监听器判断目标模型——原生视觉模型（白名单）直接看原图；文本模型则先由视觉模型转写成文字再派发。转写请求带 Symbol 标记防递归，结果按"图片 + 问题"缓存。
+工作流程：图片进入会话 → `llm/stream` 监听器判断目标模型——原生视觉模型（白名单）直接看原图；文本模型则先由视觉模型转写成文字再派发。转写请求带 Symbol 标记防递归，结果按"图片 + 问题"缓存（TTL + FIFO 上限，并发同图共享一次在途调用）。
 
-可调常量都在 [`lib/index.js`](lib/index.js) 顶部注释里：`DEFAULT_MODEL`（兜底模型）、`NATIVE_VISION_MODELS`（原生视觉白名单）、`MODEL_PRIORITY`（自动选择顺序）。
+可调常量都在 [`lib/engine.js`](lib/engine.js) 顶部：`DEFAULT_MODEL`（兜底模型）、`NATIVE_VISION_MODELS`（原生视觉白名单）、`MODEL_PRIORITY`（自动选择顺序）、`STREAM_TIMEOUT_MS`（视觉调用挂起超时）、`CACHE_TTL_MS` / `CACHE_MAX`（转写缓存）、`CATALOG_TTL_MS`（模型目录缓存）。
 
 ## License
 

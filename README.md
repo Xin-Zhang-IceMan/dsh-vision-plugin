@@ -6,7 +6,7 @@
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-bundle%20composition-1f6feb)
 
-**v1.1.1** · MIT License
+**v1.2.0** · MIT License
 
 ---
 
@@ -32,7 +32,7 @@ The image is transcribed by a vision model; the main model answers from the desc
 
 ## Quick start
 
-### Option A: permanent install — loads at every dsh start (recommended)
+### Permanent install — loads at every dsh start
 
 The repo root is a dsh *bundle package* (`dsh-vision-plugin`): the host half
 [`lib/index.js`](lib/index.js), the browser half [`lib/client.js`](lib/client.js),
@@ -83,48 +83,12 @@ The file is hot-reloaded — no restart. **Declare every text-only model you mig
 
 **③ Restart dsh.** On boot the loader mounts the `vision` row: `vision_analyze` is registered, the `llm/stream` image-translation waterfall is live, `/vision/api/state` answers the settings page, and the browser half is served at `/plugins/dsh-vision-plugin/client.js`. Verify: Settings → "Vision Model" page, `vision_analyze` in the tool list, then paste an image and ask.
 
-### Option B: dynamic plugin (no repo checkout) — process-local
-
-Prefer this when you don't want a local bundle checkout: send the block below to a DSH session and let the agent install it. Dynamic plugins are process-local — after a dsh restart, re-activate with `cordis_run` (same pluginId/packageId).
-
-```text
-Install the dsh-vision-plugin (DeepSeek Harness vision plugin v1.1.1) for me:
-
-1. Obtain the plugin source (fetch via curl, or read from a local checkout):
-   - Host half:   https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.js
-   - Client half: https://raw.githubusercontent.com/Xin-Zhang-IceMan/dsh-vision-plugin/main/plugin/vision-plugin.client.js
-
-2. Define the dynamic Cordis plugin with cordis_define:
-   - kind: "new", idPrefix: "visn"
-   - code.host   = the full content of vision-plugin.js (the function body)
-   - code.client = the full content of vision-plugin.client.js (the function body)
-   - name: "Vision Assistant"
-   - purpose: one sentence describing the plugin
-
-3. Activate it with cordis_run (mode: "run"); approve the Client half when prompted.
-
-4. If ~/.dsh/settings.yaml does not yet declare image capability for text-only
-   models, add (hot-reloaded, no restart needed):
-   llm-pi-ai:
-     providers:
-       opencode-go:
-         apiKeyEnv: OPENCODE_GO_API_KEY
-         modelOverrides:
-           deepseek-v4-flash:
-             input: [text, image]
-
-5. Verify:
-   - Tool.listTools shows vision_analyze
-   - The settings panel has a "Vision Model" page
-   - Pasting an image into the chat is transcribed automatically
-```
-
 ## Settings page
 
 Open DSH settings (bottom-left ⚙️) → "Vision Model" page:
 
 - Status badge with run state and version
-- Dropdown to pick the default vision model (auto-select or a specific model) — saved changes take effect immediately
+- Dropdown to pick the default vision model (auto-select or a specific model) — saved changes take effect immediately and are **remembered** (stored in the browser), restored automatically on the next dsh start
 - Notes showing the active model and route
 
 The UI language follows DSH (Settings → General → Language), switching between Chinese and English automatically.
@@ -138,26 +102,33 @@ That model isn't declared in settings.yaml. Add it as in step ② above — hot-
 No problem. Since v1.1.0 the plugin scans all configured providers and picks the first route with a vision model. Only when no provider has one does it degrade (the conversation continues, with a note that the image is unavailable).
 
 **Does it survive a DSH restart?**
-With the permanent install (Option A) it loads at every boot — that's the whole point. Dynamic plugins (Option B) are process-local: after a restart, re-run `cordis_run` with the same pluginId/packageId.
+Yes. The bundle is registered in the profile's `dsh.profile.bundles` and loads at every dsh boot — that's the whole point of the permanent install.
 
 **Does it cost extra?**
-Each transcription is one vision-model call; the same image with the same question is cached, so follow-up turns reuse it. Vision model priority: settings config > call parameter > auto-select.
+Each transcription is one vision-model call; the same image with the same question is cached, so follow-up turns reuse it. Vision model priority: explicit tool parameters (model/provider) > settings config > auto-select.
+
+**Is my vision-model choice remembered across restarts?**
+Yes — since v1.2.0 the settings-page choice is saved in the browser (localStorage) and restored automatically on the next dsh start; the auto-translation waterfall uses the same route. The host-side route itself is process-local.
 
 **What happens when the vision model errors?**
-The conversation never breaks: partial output is kept; a total failure retries once with a fallback model; if that fails too, the model is told the image is unavailable and the chat continues.
+The conversation never breaks: partial output is kept; a total failure retries once with a fallback model; a hung vision call is cut off after two minutes and counted as a failure (so the fallback retry kicks in); if that fails too, the model is told the image is unavailable and the chat continues.
 
 ## Bundle layout
 
-- [`lib/index.js`](lib/index.js) — host half (composition plugin row `vision`): `vision_analyze` tool, the `llm/stream` translation waterfall, and the `/vision/api/state` + `/vision/api/model` JSON API. Zero non-builtin imports on purpose (pnpm does not install the dependencies of `link:` profile plugins).
-- [`lib/client.js`](lib/client.js) — browser half (`dsh.client` roster entry): the "Vision Model" settings section, served by the web shell at `/plugins/dsh-vision-plugin/client.js`.
+- [`lib/engine.js`](lib/engine.js) — the **shared engine, single source of truth**: `vision_analyze` tool, the `llm/stream` translation waterfall, route discovery, caches, timeouts. Zero imports on purpose (pnpm does not install the dependencies of `link:` profile plugins).
+- [`lib/index.js`](lib/index.js) — bundle host adapter (composition plugin row `vision`): registers the tool, the waterfall, and the `/vision/api/state` + `/vision/api/model` JSON API on `ctx.webServer`.
+- [`lib/client.js`](lib/client.js) — bundle browser half (`dsh.client` roster entry): the "Vision Model" settings page, served by the web shell at `/plugins/dsh-vision-plugin/client.js`.
 - [`cordis.patch.yml`](cordis.patch.yml) — the loader patch row mounting the bundle (`dsh.bundle.patch`).
-- [`plugin/vision-plugin.js`](plugin/vision-plugin.js) / [`plugin/vision-plugin.client.js`](plugin/vision-plugin.client.js) — the dynamic-plugin sources used by Option B (same engine, `harness` API).
+- [`scripts/check.js`](scripts/check.js) — the consistency check (`npm run check`): verifies the version number is in sync everywhere and `lib/engine.js` stays import-free.
+- [`test/engine.test.js`](test/engine.test.js) — the engine test suite (`npm test`): route discovery, override precedence, caching/dedup, timeouts, waterfall, tool.
+
+Developing on the plugin itself: edit [`lib/engine.js`](lib/engine.js) (host logic) or [`lib/client.js`](lib/client.js) (UI), then `npm run check && npm test`.
 
 ## Under the hood (optional)
 
-Flow: an image enters the session → the `llm/stream` listener checks the target model — native vision models (whitelist) see the image directly; text-only models get a vision-model transcription dispatched in its place. Translation requests carry a Symbol marker to prevent recursion, and results are cached by image + question.
+Flow: an image enters the session → the `llm/stream` listener checks the target model — native vision models (whitelist) see the image directly; text-only models get a vision-model transcription dispatched in its place. Translation requests carry a Symbol marker to prevent recursion; results are cached by image + question (TTL + FIFO cap, concurrent turns share one in-flight call).
 
-Tunable constants live at the top of [`lib/index.js`](lib/index.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist), `MODEL_PRIORITY` (auto-select order).
+Tunable constants live at the top of [`lib/engine.js`](lib/engine.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist), `MODEL_PRIORITY` (auto-select order), `STREAM_TIMEOUT_MS` (vision-call hang timeout), `CACHE_TTL_MS` / `CACHE_MAX` (translation cache), `CATALOG_TTL_MS` (model-catalog cache).
 
 ## License
 
