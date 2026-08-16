@@ -6,7 +6,7 @@
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-bundle%20composition-1f6feb)
 
-**v1.2.0** · MIT License
+**v1.3.0** · MIT License
 
 ---
 
@@ -96,6 +96,9 @@ settings.yaml 里没有给那个模型声明图片能力。按上面步骤 ② �
 **没有配置 opencode-go 怎么办？**
 不影响。v1.1.0 起插件会遍历所有已配置的 provider，自动找到第一个带视觉模型的路由；一个都没有时才会降级（对话继续，提示图片不可用）。
 
+**我的 provider 拒绝图片，报 `unknown variant \`image_url\`, expected \`text\``？**
+这个错误说明图片块被发给了只接受文本的模型。自动选择绝不会这么做：只会自动挑原生视觉白名单（`lib/engine.js` 里的 `NATIVE_VISION_MODELS`）内的模型。但设置页会列出**所有 provider 上目录声明支持图片的全部模型**——白名单内和你在 settings.yaml 里用 `modelOverrides` 声明图片能力的都算，显式选择（设置页或 `vision_analyze` 的 `model` 参数）会被采纳。如果选中的模型上游实际拒绝图片，调用会自动回退到白名单视觉模型（一个都没有时降级为占位提示）。如果你用的模型确实支持原生视觉但还没进白名单，把它加进去，自动选择就会优先用它。
+
 **DSH 重启后插件还在吗？**
 会。永久安装把 bundle 注册进 profile 的 `dsh.profile.bundles`，每次启动都会自动载入——这正是它的目的。
 
@@ -121,9 +124,11 @@ settings.yaml 里没有给那个模型声明图片能力。按上面步骤 ② �
 
 ## 深入细节（可选阅读）
 
-工作流程：图片进入会话 → `llm/stream` 监听器判断目标模型——原生视觉模型（白名单）直接看原图；文本模型则先由视觉模型转写成文字再派发。转写请求带 Symbol 标记防递归，结果按"图片 + 问题"缓存（TTL + FIFO 上限，并发同图共享一次在途调用）。
+工作流程：图片进入会话 → `llm/stream` 监听器判断目标模型——原生视觉模型（白名单）直接看原图；文本模型则先由视觉模型转写成文字再派发。图片检测是递归的（与宿主一致）：嵌套在 `tool-result` 里的图片、以及助手消息里的图片（来自视觉模型会话的历史）同样会被转写或替换，保证任何图片块都不会到达纯文本模型。转写请求带 Symbol 标记防递归，结果按"图片 + 问题"缓存（TTL + FIFO 上限，并发同图共享一次在途调用）。
 
-可调常量都在 [`lib/engine.js`](lib/engine.js) 顶部：`DEFAULT_MODEL`（兜底模型）、`NATIVE_VISION_MODELS`（原生视觉白名单）、`MODEL_PRIORITY`（自动选择顺序）、`STREAM_TIMEOUT_MS`（视觉调用挂起超时）、`CACHE_TTL_MS` / `CACHE_MAX`（转写缓存）、`CATALOG_TTL_MS`（模型目录缓存）。
+设置页会列出所有 provider 上目录声明支持图片的全部模型——不限于 opencode 路由：白名单原生视觉模型，以及你通过 `modelOverrides` 声明图片能力的模型都显示。只有自动选择走白名单门控：`resolveVisionRoute` 只会挑 `NATIVE_VISION_MODELS` 里的模型，因为仅凭目录的"图片能力"无法和 `modelOverrides` 广告区分，纯文本模型会在上游直接拒绝图片块（`unknown variant \`image_url\``）。显式选择则信任用户配置；若所选模型上游失败，现有重试逻辑会自动回退到白名单视觉模型。
+
+可调常量都在 [`lib/engine.js`](lib/engine.js) 顶部：`DEFAULT_MODEL`（兜底模型）、`NATIVE_VISION_MODELS`（自动选择用的原生视觉白名单）、`MODEL_PRIORITY`（自动选择顺序）、`STREAM_TIMEOUT_MS`（视觉调用挂起超时）、`CACHE_TTL_MS` / `CACHE_MAX`（转写缓存）、`CATALOG_TTL_MS`（模型目录缓存）。
 
 ## License
 

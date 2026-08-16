@@ -6,7 +6,7 @@
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-bundle%20composition-1f6feb)
 
-**v1.2.0** · MIT License
+**v1.3.0** · MIT License
 
 ---
 
@@ -101,6 +101,9 @@ That model isn't declared in settings.yaml. Add it as in step ② above — hot-
 **What if opencode-go isn't configured?**
 No problem. Since v1.1.0 the plugin scans all configured providers and picks the first route with a vision model. Only when no provider has one does it degrade (the conversation continues, with a note that the image is unavailable).
 
+**My provider rejects pasted images with `unknown variant \`image_url\`, expected \`text\``?**
+That error means an image block was sent to a model that only accepts text. Auto-selection never does that: only models on the native-vision whitelist (`NATIVE_VISION_MODELS` in `lib/engine.js`) are picked automatically. But the settings page lists **every catalog image-capable model on every configured provider** — whitelisted ones and any you declared image-capable via `modelOverrides` in settings.yaml alike — and an explicit choice (settings page or `vision_analyze` `model` override) is honored. If the chosen model turns out to reject image input upstream, the call automatically falls back to a whitelisted vision model (or degrades to a placeholder when none is available). If you use a genuinely vision-capable model that isn't whitelisted yet, add it to the whitelist so auto-selection prefers it.
+
 **Does it survive a DSH restart?**
 Yes. The bundle is registered in the profile's `dsh.profile.bundles` and loads at every dsh boot — that's the whole point of the permanent install.
 
@@ -126,9 +129,11 @@ Developing on the plugin itself: edit [`lib/engine.js`](lib/engine.js) (host log
 
 ## Under the hood (optional)
 
-Flow: an image enters the session → the `llm/stream` listener checks the target model — native vision models (whitelist) see the image directly; text-only models get a vision-model transcription dispatched in its place. Translation requests carry a Symbol marker to prevent recursion; results are cached by image + question (TTL + FIFO cap, concurrent turns share one in-flight call).
+Flow: an image enters the session → the `llm/stream` listener checks the target model — native vision models (whitelist) see the image directly; text-only models get a vision-model transcription dispatched in its place. Image detection is recursive, mirroring the harness: images nested inside `tool-result` blocks and images in assistant messages (from a vision-model session) are translated or replaced too, so no image block ever reaches a text-only model. Translation requests carry a Symbol marker to prevent recursion; results are cached by image + question (TTL + FIFO cap, concurrent turns share one in-flight call).
 
-Tunable constants live at the top of [`lib/engine.js`](lib/engine.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist), `MODEL_PRIORITY` (auto-select order), `STREAM_TIMEOUT_MS` (vision-call hang timeout), `CACHE_TTL_MS` / `CACHE_MAX` (translation cache), `CATALOG_TTL_MS` (model-catalog cache).
+The settings page lists every catalog image-capable model on every configured provider — not just opencode routes: whitelisted native vision models plus any model you declared image-capable via `modelOverrides`. Auto-selection is the only whitelist-gated path: `resolveVisionRoute` only ever picks `NATIVE_VISION_MODELS` entries, because catalog-only "image capability" is indistinguishable from a `modelOverrides` advertisement, and a text-only model would reject the image blocks upstream (`unknown variant \`image_url\``). Explicit user choices are trusted — your configuration decides; if the chosen model fails upstream, the existing retry falls back to a whitelisted vision model.
+
+Tunable constants live at the top of [`lib/engine.js`](lib/engine.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist for auto-selection), `MODEL_PRIORITY` (auto-select order), `STREAM_TIMEOUT_MS` (vision-call hang timeout), `CACHE_TTL_MS` / `CACHE_MAX` (translation cache), `CATALOG_TTL_MS` (model-catalog cache).
 
 ## License
 
