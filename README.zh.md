@@ -6,7 +6,7 @@
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-bundle%20composition-1f6feb)
 
-**v1.3.0** · MIT License
+**v1.4.0** · MIT License · 兼容 dsh v0.1.0-rc.8（及 rc.7）
 
 ---
 
@@ -76,6 +76,17 @@ llm-pi-ai:
 
 文件会被自动热加载，不用重启。**建议把每个你可能用到的文本模型都写上**——否则切到未声明的模型后粘贴图片，会在插件转写之前就被拒绝。
 
+> **dsh v0.1.0-rc.8 及以上**另有原生方案：内置的 `deepseek-official` 路由（`llm-deepseek`）支持配置启用原生图片请求，DeepSeek 模型可以直接在它自己的配置里声明图片能力：
+>
+> ```yaml
+> llm-deepseek:
+>   models:
+>     - id: deepseek-v4-flash
+>       inputModalities: [text, image]
+> ```
+>
+> 插件信任这条路由：在该路由上声明图片能力的模型，设置页里会标记「原生视觉」、以兜底梯队加入自动选择、且图片不再转写（rc.8 适配器会自行强制校验所声明的能力）。pi-ai 路由的 `modelOverrides` 仍然只是"放行"机制——这类模型照旧转写，行为与之前完全一致。
+
 **③ 重启 dsh。** 启动时 loader 会挂载 `vision` 行：注册 `vision_analyze` 工具、开启 `llm/stream` 图片转写瀑布、`/vision/api/state` 服务设置页，浏览器半部由 `/plugins/dsh-vision-plugin/client.js` 提供。验证：设置面板出现"视觉模型"页、工具列表里有 `vision_analyze`，然后粘贴图片开聊。
 
 ## 设置界面
@@ -97,7 +108,7 @@ settings.yaml 里没有给那个模型声明图片能力。按上面步骤 ② �
 不影响。v1.1.0 起插件会遍历所有已配置的 provider，自动找到第一个带视觉模型的路由；一个都没有时才会降级（对话继续，提示图片不可用）。
 
 **我的 provider 拒绝图片，报 `unknown variant \`image_url\`, expected \`text\``？**
-这个错误说明图片块被发给了只接受文本的模型。自动选择绝不会这么做：只会自动挑原生视觉白名单（`lib/engine.js` 里的 `NATIVE_VISION_MODELS`）内的模型。但设置页会列出**所有 provider 上目录声明支持图片的全部模型**——白名单内和你在 settings.yaml 里用 `modelOverrides` 声明图片能力的都算，显式选择（设置页或 `vision_analyze` 的 `model` 参数）会被采纳。如果选中的模型上游实际拒绝图片，调用会自动回退到白名单视觉模型（一个都没有时降级为占位提示）。如果你用的模型确实支持原生视觉但还没进白名单，把它加进去，自动选择就会优先用它。
+这个错误说明图片块被发给了只接受文本的模型。自动选择绝不会这么做：只会自动挑受信任的模型——原生视觉白名单（`lib/engine.js` 里的 `NATIVE_VISION_MODELS`），以及 dsh v0.1.0-rc.8 起在内置 `deepseek-official` 路由上声明了图片能力的模型。但设置页会列出**所有 provider 上目录声明支持图片的全部模型**——受信任的和你在 settings.yaml 里用 `modelOverrides` 声明图片能力的都算，显式选择（设置页或 `vision_analyze` 的 `model` 参数）会被采纳。如果选中的模型上游实际拒绝图片，调用会自动回退到受信任的视觉模型（一个都没有时降级为占位提示）。如果你用的模型确实支持原生视觉但还没进白名单，把它加进去，自动选择就会优先用它。
 
 **DSH 重启后插件还在吗？**
 会。永久安装把 bundle 注册进 profile 的 `dsh.profile.bundles`，每次启动都会自动载入——这正是它的目的。
@@ -114,7 +125,7 @@ settings.yaml 里没有给那个模型声明图片能力。按上面步骤 ② �
 ## Bundle 结构
 
 - [`lib/engine.js`](lib/engine.js) —— **共享引擎，单一事实源**：`vision_analyze` 工具、`llm/stream` 转写瀑布、路由发现、缓存与超时。刻意零 import（pnpm 不会为 `link:` profile 插件安装依赖）。
-- [`lib/index.js`](lib/index.js) —— bundle 宿主适配器（组合插件行 `vision`）：在 `ctx.webServer` 上注册工具、瀑布与 `/vision/api/state`、`/vision/api/model` JSON 接口。
+- [`lib/index.js`](lib/index.js) —— bundle 宿主适配器（组合插件行 `vision`）：注册工具与瀑布；`/vision/api/state`、`/vision/api/model` JSON 接口通过 `ctx.inject(['webServer'], …)` 条件注册，因此没有 Web 服务的栈（headless——rc.8 的启动审计会直接判挂起等待缺失服务的行）也能正常激活。
 - [`lib/client.js`](lib/client.js) —— bundle 浏览器半部（`dsh.client` 名册条目）："视觉模型"设置页，由 web shell 在 `/plugins/dsh-vision-plugin/client.js` 提供。
 - [`cordis.patch.yml`](cordis.patch.yml) —— 挂载该 bundle 的 loader 补丁行（`dsh.bundle.patch`）。
 - [`scripts/check.js`](scripts/check.js) —— 一致性检查（`npm run check`）：校验版本号在各处一致、`lib/engine.js` 保持零 import。
@@ -124,11 +135,11 @@ settings.yaml 里没有给那个模型声明图片能力。按上面步骤 ② �
 
 ## 深入细节（可选阅读）
 
-工作流程：图片进入会话 → `llm/stream` 监听器判断目标模型——原生视觉模型（白名单）直接看原图；文本模型则先由视觉模型转写成文字再派发。图片检测是递归的（与宿主一致）：嵌套在 `tool-result` 里的图片、以及助手消息里的图片（来自视觉模型会话的历史）同样会被转写或替换，保证任何图片块都不会到达纯文本模型。转写请求带 Symbol 标记防递归，结果按"图片 + 问题"缓存（TTL + FIFO 上限，并发同图共享一次在途调用）。
+工作流程：图片进入会话 → `llm/stream` 监听器判断目标模型——原生视觉模型直接看原图；文本模型则先由视觉模型转写成文字再派发。"原生视觉"指任意路由上的白名单模型，或（dsh v0.1.0-rc.8 起）宿主自有 `deepseek-official` 路由上目录声明支持图片的模型——该路由的适配器会自行强制校验声明的能力。图片检测是递归的（与宿主一致）：嵌套在 `tool-result` 里的图片、以及助手消息里的图片（来自视觉模型会话的历史）同样会被转写或替换，保证任何图片块都不会到达纯文本模型。转写请求带 Symbol 标记防递归，结果按"图片 + 问题"缓存（TTL + FIFO 上限，并发同图共享一次在途调用）。
 
-设置页会列出所有 provider 上目录声明支持图片的全部模型——不限于 opencode 路由：白名单原生视觉模型，以及你通过 `modelOverrides` 声明图片能力的模型都显示。只有自动选择走白名单门控：`resolveVisionRoute` 只会挑 `NATIVE_VISION_MODELS` 里的模型，因为仅凭目录的"图片能力"无法和 `modelOverrides` 广告区分，纯文本模型会在上游直接拒绝图片块（`unknown variant \`image_url\``）。显式选择则信任用户配置；若所选模型上游失败，现有重试逻辑会自动回退到白名单视觉模型。
+设置页会列出所有 provider 上目录声明支持图片的全部模型——不限于 opencode 路由：受信任的原生视觉模型（白名单 + rc.8 `deepseek-official`），以及你通过 `modelOverrides` 声明图片能力的模型都显示。只有自动选择走信任门控：`resolveVisionRoute` 只会挑受信任的模型，因为 pi-ai 路由上仅凭目录的"图片能力"无法和 `modelOverrides` 广告区分，纯文本模型会在上游直接拒绝图片块（`unknown variant \`image_url\``）。显式选择则信任用户配置；若所选模型上游失败，现有重试逻辑会自动回退到受信任的视觉模型。
 
-可调常量都在 [`lib/engine.js`](lib/engine.js) 顶部：`DEFAULT_MODEL`（兜底模型）、`NATIVE_VISION_MODELS`（自动选择用的原生视觉白名单）、`MODEL_PRIORITY`（自动选择顺序）、`STREAM_TIMEOUT_MS`（视觉调用挂起超时）、`CACHE_TTL_MS` / `CACHE_MAX`（转写缓存）、`CATALOG_TTL_MS`（模型目录缓存）。
+可调常量都在 [`lib/engine.js`](lib/engine.js) 顶部：`DEFAULT_MODEL`（兜底模型）、`NATIVE_VISION_MODELS`（自动选择用的原生视觉白名单）、`DEEPSEEK_OFFICIAL_PROVIDER`（rc.8 声明图片能力即受信任的路由）、`MODEL_PRIORITY`（自动选择顺序）、`STREAM_TIMEOUT_MS`（视觉调用挂起超时）、`CACHE_TTL_MS` / `CACHE_MAX`（转写缓存）、`CATALOG_TTL_MS`（模型目录缓存）。
 
 ## License
 

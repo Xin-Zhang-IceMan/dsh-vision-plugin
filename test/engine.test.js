@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import {
   VERSION,
   TRANSLATED,
+  DEEPSEEK_OFFICIAL_PROVIDER,
   resetState,
   setConfiguredRoute,
   getConfiguredRoute,
@@ -24,6 +25,7 @@ import {
   runVisionCall,
   streamOnce,
   translateMessages,
+  shouldKeepImages,
   makeWaterfallListener,
   catalogState,
   makeTool,
@@ -97,6 +99,33 @@ test('resolveVisionRoute: override-advertised text-only models are never selecte
 test('resolveVisionRoute: no vision model anywhere -> null route', async () => {
   const ctx = makeCtx({ catalogs: { p1: [model('a', false)] } })
   assert.deepEqual(await resolveVisionRoute(ctx, null), { provider: null, model: null })
+})
+
+test('resolveVisionRoute: rc.8 deepseek-official image-capable models are trusted', async () => {
+  // With no whitelisted vision model anywhere, the deepseek-official route's
+  // adapter-enforced image capability is a trusted auto-selection fallback.
+  const onlyOfficial = makeCtx({ catalogs: {
+    [DEEPSEEK_OFFICIAL_PROVIDER]: [model('deepseek-v4-flash'), model('deepseek-v4-pro', false)],
+  } })
+  assert.deepEqual(await resolveVisionRoute(onlyOfficial, null),
+    { provider: DEEPSEEK_OFFICIAL_PROVIDER, model: 'deepseek-v4-flash' })
+  // Preferring the caller's own provider still wins when it is deepseek-official…
+  const both = makeCtx({ catalogs: {
+    [DEEPSEEK_OFFICIAL_PROVIDER]: [model('deepseek-v4-flash')],
+    p1: [model('qwen3.7-plus')],
+  } })
+  assert.deepEqual(await resolveVisionRoute(both, null),
+    { provider: DEEPSEEK_OFFICIAL_PROVIDER, model: 'deepseek-v4-flash' })
+  // …and preferring a whitelisted provider still lands on the whitelist model.
+  assert.deepEqual(await resolveVisionRoute(both, 'p1'), { provider: 'p1', model: 'qwen3.7-plus' })
+  // The same model id advertised via pi-ai modelOverrides stays untrusted.
+  // Fresh catalogs per case: the engine's provider-keyed catalog cache (TTL)
+  // would otherwise serve p1's qwen3.7-plus entry from the previous case.
+  resetState()
+  const overrideAd = makeCtx({ catalogs: {
+    p1: [model('deepseek-v4-flash')],
+  } })
+  assert.deepEqual(await resolveVisionRoute(overrideAd, null), { provider: null, model: null })
 })
 
 test('findProviderForModel: exact id, prefers the requested provider', async () => {
@@ -421,6 +450,79 @@ test('waterfall: native vision model passes through untouched', async () => {
   assert.equal(ctx.calls.stream, 0)
 })
 
+test('waterfall: rc.8 deepseek-official image-capable model passes through untouched', async () => {
+  // On the harness's deepseek-official route the catalog inputModalities is
+  // the adapter-enforced native-image switch (rc.8 configurable native image
+  // requests), so images must NOT be transcribed for such a model.
+  let nextCalled = false
+  const ctx = makeCtx({ catalogs: { [DEEPSEEK_OFFICIAL_PROVIDER]: [model('deepseek-v4-flash')] } })
+  const listener = makeWaterfallListener(ctx)
+  const options = {
+    provider: DEEPSEEK_OFFICIAL_PROVIDER,
+    model: 'deepseek-v4-flash',
+    messages: [{ role: 'user', content: [imgBlock('a')] }],
+  }
+  for await (const _c of listener(options, async function* () {
+    nextCalled = true
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })) { /* drain */ }
+  assert.equal(nextCalled, true)
+  assert.equal(ctx.calls.stream, 0)
+})
+
+test('waterfall: deepseek-official text-only model still gets transcription', async () => {
+  // The same model id on the same route but WITHOUT image input declared must
+  // still be transcribed — the rc.8 adapter refuses image blocks for it.
+  const ctx = makeCtx({
+    catalogs: { [DEEPSEEK_OFFICIAL_PROVIDER]: [model('deepseek-v4-flash', false), model('qwen3.7-plus')] },
+    streamImpl: textStream('a photo of a cat'),
+  })
+  const listener = makeWaterfallListener(ctx)
+  const options = {
+    provider: DEEPSEEK_OFFICIAL_PROVIDER,
+    model: 'deepseek-v4-flash',
+    messages: [{ role: 'user', content: [imgBlock('a')] }],
+  }
+  const chunks = []
+  for await (const c of listener(options, async function* () {
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })) {
+    chunks.push(c)
+  }
+  assert.equal(ctx.calls.stream, 2) // 1 translation call + 1 re-dispatch
+  const redispatch = ctx.calls.streams[1]
+  assert.equal(redispatch[TRANSLATED], true)
+  assert.equal(redispatch.messages[0].content.filter((b) => b.type === 'image').length, 0)
+  assert.ok(chunks.some((c) => c.type === 'text-delta'))
+})
+
+test('shouldKeepImages: whitelist, deepseek-official catalog gate, safe degradation', async () => {
+  const ctx = makeCtx({ catalogs: {
+    [DEEPSEEK_OFFICIAL_PROVIDER]: [model('deepseek-v4-flash'), model('deepseek-v4-pro', false)],
+  } })
+  // Whitelisted models keep images on any provider — no catalog call needed.
+  assert.equal(await shouldKeepImages(ctx, 'anything', 'qwen3.7-plus'), true)
+  assert.equal(ctx.calls.listModels, 0)
+  // deepseek-official: catalog-declared image capability is trusted…
+  assert.equal(await shouldKeepImages(ctx, DEEPSEEK_OFFICIAL_PROVIDER, 'deepseek-v4-flash'), true)
+  // …but a text-only deepseek-official model is not.
+  assert.equal(await shouldKeepImages(ctx, DEEPSEEK_OFFICIAL_PROVIDER, 'deepseek-v4-pro'), false)
+  // Override-advertised image capability on other routes stays untrusted.
+  assert.equal(await shouldKeepImages(ctx, 'p1', 'deepseek-v4-flash'), false)
+  // Catalog failures degrade to false (transcribing is always safe). Clear
+  // the provider-keyed catalog cache first so the broken ctx's throw is
+  // actually reached (the same provider id was cached by the cases above).
+  resetState()
+  const broken = {
+    llm: {
+      listProviders: () => [DEEPSEEK_OFFICIAL_PROVIDER],
+      listModels: async () => { throw new Error('catalog down') },
+      stream: () => { throw new Error('unused') },
+    },
+  }
+  assert.equal(await shouldKeepImages(broken, DEEPSEEK_OFFICIAL_PROVIDER, 'deepseek-v4-flash'), false)
+})
+
 test('waterfall: already-translated requests pass through (no recursion)', async () => {
   let nextCalled = false
   const ctx = makeCtx({})
@@ -515,6 +617,33 @@ test('catalogState: shape, image flags, and catalog caching', async () => {
   // second call within the TTL hits the catalog cache
   await catalogState(ctx)
   assert.equal(ctx.calls.listModels, 2)
+})
+
+test('catalogState: deepseek-official image models are native; override ads are not', async () => {
+  const ctx = makeCtx({ catalogs: {
+    [DEEPSEEK_OFFICIAL_PROVIDER]: [model('deepseek-v4-flash'), model('deepseek-v4-pro', false)],
+    p1: [model('deepseek-v4-flash'), model('qwen3.7-plus')],
+  } })
+  const s = await catalogState(ctx)
+  const officialFlash = s.models.find((m) => m.id === 'deepseek-v4-flash' && m.provider === DEEPSEEK_OFFICIAL_PROVIDER)
+  assert.equal(officialFlash.image, true)
+  assert.equal(officialFlash.native, true)
+  const officialPro = s.models.find((m) => m.id === 'deepseek-v4-pro' && m.provider === DEEPSEEK_OFFICIAL_PROVIDER)
+  assert.equal(officialPro.image, false)
+  assert.equal(officialPro.native, false)
+  // The same id on a pi-ai route is a modelOverrides advertisement: usable
+  // as an explicit choice, but not trusted as native vision.
+  const p1Flash = s.models.find((m) => m.id === 'deepseek-v4-flash' && m.provider === 'p1')
+  assert.equal(p1Flash.image, true)
+  assert.equal(p1Flash.native, false)
+  const qwen = s.models.find((m) => m.id === 'qwen3.7-plus' && m.provider === 'p1')
+  assert.equal(qwen.image, true)
+  assert.equal(qwen.native, true)
+  // The nativeVisionModels hint line includes trusted deepseek-official ids
+  // but never the override-advertised duplicates.
+  assert.ok(s.nativeVisionModels.includes('deepseek-v4-flash'))
+  assert.equal(s.nativeVisionModels.filter((id) => id === 'deepseek-v4-flash').length, 1)
+  assert.ok(s.nativeVisionModels.includes('qwen3.7-plus'))
 })
 
 // ── the tool ─────────────────────────────────────────────────────────────────

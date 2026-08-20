@@ -42,7 +42,9 @@ There is no `npm run build` anymore — nothing in this repo is generated.
 - **Zero runtime dependencies.** The package declares none and must not add any.
 - The bundle mounts at boot via the `vision` row in `cordis.patch.yml`; the browser half is served at `/plugins/dsh-vision-plugin/client.js` through the `dsh.client` declaration in `package.json`.
 - Host integration points: `ctx.tools.register` (tool), `ctx.on('llm/stream', …)` (waterfall), `ctx.webServer.register` (HTTP API). The client half injects `slots` / `locale` and registers into the `settings.section` slot; it talks to the host via `GET /vision/api/state` and `POST /vision/api/model`.
-- A deployment prerequisite that docs and release notes must keep mentioning: text-only models need `input: [text, image]` declared via `modelOverrides` in `~/.dsh/settings.yaml`, otherwise pasted images are rejected before the plugin can transcribe them.
+- **The row must never hard-inject `webServer`.** Since dsh rc.8 the boot audit fails any loader entry left pending on a missing service, and headless stacks have no web server. The settings API is registered through `ctx.inject(['webServer'], …)` inside `apply` — keep it that way.
+- **rc.8's `deepseek-official` route is trusted** (see `DEEPSEEK_OFFICIAL_PROVIDER` in `lib/engine.js`): its catalog `inputModalities` is adapter-enforced, so declared image-capable models count as native vision for auto-selection and the waterfall bypass. pi-ai `modelOverrides` advertisements stay untrusted — that asymmetry is intentional and tested.
+- A deployment prerequisite that docs and release notes must keep mentioning: text-only models need `input: [text, image]` declared via `modelOverrides` in `~/.dsh/settings.yaml`, otherwise pasted images are rejected before the plugin can transcribe them. On rc.8+ the `llm-deepseek` section (`models[].inputModalities`) is the native alternative for DeepSeek models.
 - The translation re-dispatch must always carry the `TRANSLATED` Symbol (and the waterfall must pass such requests through) — that marker is what prevents infinite recursion.
 
 ## Code conventions

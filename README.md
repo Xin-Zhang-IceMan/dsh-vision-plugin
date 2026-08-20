@@ -6,7 +6,7 @@
 
 ![#dsh-plugin](https://img.shields.io/badge/dsh-plugin-bundle%20composition-1f6feb)
 
-**v1.3.0** · MIT License
+**v1.4.0** · MIT License · compatible with dsh v0.1.0-rc.8 (and rc.7)
 
 ---
 
@@ -81,6 +81,17 @@ llm-pi-ai:
 
 The file is hot-reloaded — no restart. **Declare every text-only model you might switch to**: otherwise pasting an image after switching to an undeclared model is rejected before the plugin can transcribe it.
 
+> **On dsh v0.1.0-rc.8+** there is a second, native option for DeepSeek models: the built-in `deepseek-official` route (`llm-deepseek`) sends images natively when a model declares them, so enable the capability in its own config instead of advertising it:
+>
+> ```yaml
+> llm-deepseek:
+>   models:
+>     - id: deepseek-v4-flash
+>       inputModalities: [text, image]
+> ```
+>
+> The plugin trusts this route: models declared image-capable there are tagged "native vision" in the settings page, join auto-selection as a fallback tier, and keep their images untranslated (the rc.8 adapter enforces the declared capability itself). `modelOverrides` on pi-ai routes stays the admission-only mechanism — those models still get transcribed, exactly as before.
+
 **③ Restart dsh.** On boot the loader mounts the `vision` row: `vision_analyze` is registered, the `llm/stream` image-translation waterfall is live, `/vision/api/state` answers the settings page, and the browser half is served at `/plugins/dsh-vision-plugin/client.js`. Verify: Settings → "Vision Model" page, `vision_analyze` in the tool list, then paste an image and ask.
 
 ## Settings page
@@ -102,7 +113,7 @@ That model isn't declared in settings.yaml. Add it as in step ② above — hot-
 No problem. Since v1.1.0 the plugin scans all configured providers and picks the first route with a vision model. Only when no provider has one does it degrade (the conversation continues, with a note that the image is unavailable).
 
 **My provider rejects pasted images with `unknown variant \`image_url\`, expected \`text\``?**
-That error means an image block was sent to a model that only accepts text. Auto-selection never does that: only models on the native-vision whitelist (`NATIVE_VISION_MODELS` in `lib/engine.js`) are picked automatically. But the settings page lists **every catalog image-capable model on every configured provider** — whitelisted ones and any you declared image-capable via `modelOverrides` in settings.yaml alike — and an explicit choice (settings page or `vision_analyze` `model` override) is honored. If the chosen model turns out to reject image input upstream, the call automatically falls back to a whitelisted vision model (or degrades to a placeholder when none is available). If you use a genuinely vision-capable model that isn't whitelisted yet, add it to the whitelist so auto-selection prefers it.
+That error means an image block was sent to a model that only accepts text. Auto-selection never does that: only trusted models — the native-vision whitelist (`NATIVE_VISION_MODELS` in `lib/engine.js`) plus, on dsh v0.1.0-rc.8+, models declared image-capable on the built-in `deepseek-official` route — are picked automatically. But the settings page lists **every catalog image-capable model on every configured provider** — trusted ones and any you declared image-capable via `modelOverrides` in settings.yaml alike — and an explicit choice (settings page or `vision_analyze` `model` override) is honored. If the chosen model turns out to reject image input upstream, the call automatically falls back to a trusted vision model (or degrades to a placeholder when none is available). If you use a genuinely vision-capable model that isn't whitelisted yet, add it to the whitelist so auto-selection prefers it.
 
 **Does it survive a DSH restart?**
 Yes. The bundle is registered in the profile's `dsh.profile.bundles` and loads at every dsh boot — that's the whole point of the permanent install.
@@ -119,7 +130,7 @@ The conversation never breaks: partial output is kept; a total failure retries o
 ## Bundle layout
 
 - [`lib/engine.js`](lib/engine.js) — the **shared engine, single source of truth**: `vision_analyze` tool, the `llm/stream` translation waterfall, route discovery, caches, timeouts. Zero imports on purpose (pnpm does not install the dependencies of `link:` profile plugins).
-- [`lib/index.js`](lib/index.js) — bundle host adapter (composition plugin row `vision`): registers the tool, the waterfall, and the `/vision/api/state` + `/vision/api/model` JSON API on `ctx.webServer`.
+- [`lib/index.js`](lib/index.js) — bundle host adapter (composition plugin row `vision`): registers the tool and the waterfall; the `/vision/api/state` + `/vision/api/model` JSON API is registered through `ctx.inject(['webServer'], …)` so the row also activates in stacks without a web server (headless — rc.8's boot audit fails rows left pending on missing services).
 - [`lib/client.js`](lib/client.js) — bundle browser half (`dsh.client` roster entry): the "Vision Model" settings page, served by the web shell at `/plugins/dsh-vision-plugin/client.js`.
 - [`cordis.patch.yml`](cordis.patch.yml) — the loader patch row mounting the bundle (`dsh.bundle.patch`).
 - [`scripts/check.js`](scripts/check.js) — the consistency check (`npm run check`): verifies the version number is in sync everywhere and `lib/engine.js` stays import-free.
@@ -129,11 +140,11 @@ Developing on the plugin itself: edit [`lib/engine.js`](lib/engine.js) (host log
 
 ## Under the hood (optional)
 
-Flow: an image enters the session → the `llm/stream` listener checks the target model — native vision models (whitelist) see the image directly; text-only models get a vision-model transcription dispatched in its place. Image detection is recursive, mirroring the harness: images nested inside `tool-result` blocks and images in assistant messages (from a vision-model session) are translated or replaced too, so no image block ever reaches a text-only model. Translation requests carry a Symbol marker to prevent recursion; results are cached by image + question (TTL + FIFO cap, concurrent turns share one in-flight call).
+Flow: an image enters the session → the `llm/stream` listener checks the target model — native vision models see the image directly; text-only models get a vision-model transcription dispatched in its place. "Native vision" means a whitelisted model on any route, or (dsh v0.1.0-rc.8+) any catalog image-capable model on the harness's own `deepseek-official` route, where the adapter enforces the declared capability. Image detection is recursive, mirroring the harness: images nested inside `tool-result` blocks and images in assistant messages (from a vision-model session) are translated or replaced too, so no image block ever reaches a text-only model. Translation requests carry a Symbol marker to prevent recursion; results are cached by image + question (TTL + FIFO cap, concurrent turns share one in-flight call).
 
-The settings page lists every catalog image-capable model on every configured provider — not just opencode routes: whitelisted native vision models plus any model you declared image-capable via `modelOverrides`. Auto-selection is the only whitelist-gated path: `resolveVisionRoute` only ever picks `NATIVE_VISION_MODELS` entries, because catalog-only "image capability" is indistinguishable from a `modelOverrides` advertisement, and a text-only model would reject the image blocks upstream (`unknown variant \`image_url\``). Explicit user choices are trusted — your configuration decides; if the chosen model fails upstream, the existing retry falls back to a whitelisted vision model.
+The settings page lists every catalog image-capable model on every configured provider — not just opencode routes: trusted native vision models (whitelist + rc.8 `deepseek-official`) plus any model you declared image-capable via `modelOverrides`. Auto-selection is the only trust-gated path: `resolveVisionRoute` only ever picks trusted entries, because catalog-only "image capability" on pi-ai routes is indistinguishable from a `modelOverrides` advertisement, and a text-only model would reject the image blocks upstream (`unknown variant \`image_url\``). Explicit user choices are trusted — your configuration decides; if the chosen model fails upstream, the existing retry falls back to a trusted vision model.
 
-Tunable constants live at the top of [`lib/engine.js`](lib/engine.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist for auto-selection), `MODEL_PRIORITY` (auto-select order), `STREAM_TIMEOUT_MS` (vision-call hang timeout), `CACHE_TTL_MS` / `CACHE_MAX` (translation cache), `CATALOG_TTL_MS` (model-catalog cache).
+Tunable constants live at the top of [`lib/engine.js`](lib/engine.js): `DEFAULT_MODEL` (fallback model), `NATIVE_VISION_MODELS` (native-vision whitelist for auto-selection), `DEEPSEEK_OFFICIAL_PROVIDER` (the rc.8 route whose declared image capability is trusted), `MODEL_PRIORITY` (auto-select order), `STREAM_TIMEOUT_MS` (vision-call hang timeout), `CACHE_TTL_MS` / `CACHE_MAX` (translation cache), `CATALOG_TTL_MS` (model-catalog cache).
 
 ## License
 
